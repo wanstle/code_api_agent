@@ -1,0 +1,52 @@
+# ============ Python ============
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ============ 被分析的仓库(如 click)============
+# 所有 clone 进来的目标仓库落在 .cache/repos/,整个 .cache 不入库
+.cache/
+
+# ============ 生成结果(勿上传)============
+# docgen 生成的 MkDocs 文档站
+docs/
+# mkdocs build 产物
+site/
+# RepoMap 导出
+*.repomap.json
+# 索引(一般已在 .cache/ 下)
+*.sqlite
+*.sqlite3
+chroma/
+
+# ============ 模型权重 / 大文件(严禁上传)============
+# GGUF 权重目录
+models/
+# llama.cpp 源码、预编译二进制、构建产物
+third_party/
+*.gguf
+*.bin
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+
+# ============ 杂项 ============
+.DS_Store
+*.log
+.chainlit/

@@ -1,0 +1,15 @@
+# --- Day 1: ingestion + inference 客户端 ---
+GitPython>=3.1.40           # clone 仓库
+tree-sitter>=0.23.0         # AST 解析核心
+tree-sitter-language-pack>=0.7.0   # 预编译多语言 grammar(免编译)
+openai>=1.30.0             # 调 llama-server 的 OpenAI 兼容接口
+typer>=0.12.0              # CLI 入口
+rich>=13.7.0              # 终端美化输出
+
+# --- Day 2: indexing ---
+fastembed>=0.8.0          # CPU embedding(ONNX),默认 bge-small-en-v1.5
+chromadb>=1.5.0           # 向量库(SQLite 持久化)
+
+# --- Day 7: 演示层(可选,仅 demo 需要) ---
+mkdocs-material>=9.5.0     # 文档站(把生成的 markdown 渲染成可浏览站点)
+chainlit>=2.0.0           # 问答演示界面(展示工具轨迹 + 引用)
