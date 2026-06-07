@@ -17,7 +17,6 @@ env/
 
 # ============ 生成结果(勿上传)============
 # docgen 生成的 MkDocs 文档站
-docs/
 # mkdocs build 产物
 site/
 # RepoMap 导出
