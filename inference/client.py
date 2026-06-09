@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from openai import OpenAI
+from openai import OpenAI, APIConnectionError, APITimeoutError
 
 from common.config import LlamaConfig
 
@@ -64,13 +64,22 @@ class LlamaClient:
 
         t0 = time.perf_counter()
         # with_raw_response 拿原始 JSON,以便读取 llama-server 的非标准字段 timings。
-        raw_resp = self._client.chat.completions.with_raw_response.create(
-            model=self.config.model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            extra_body=extra_body,
-        )
+        # 对瞬时连接/超时错误做有限重试(应对服务短暂抖动;服务彻底崩则最终抛出)。
+        attempts = 3
+        for i in range(attempts):
+            try:
+                raw_resp = self._client.chat.completions.with_raw_response.create(
+                    model=self.config.model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    extra_body=extra_body,
+                )
+                break
+            except (APIConnectionError, APITimeoutError):
+                if i == attempts - 1:
+                    raise
+                time.sleep(1.5 * (i + 1))
         latency = time.perf_counter() - t0
 
         data = raw_resp.parse().to_dict()

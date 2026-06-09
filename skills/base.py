@@ -79,6 +79,18 @@ register(Skill(
 ))
 
 register(Skill(
+    name="apidoc",
+    kind="template",
+    description="为单个符号生成 API 文档(无 docstring 时)",
+    suffix=(
+        "你是 API 文档撰写者。根据给定的**签名与源码**,生成简洁的 API 参考说明:"
+        "第一行用一句话说明用途;随后用 Markdown 列出 **Parameters**(逐个:名 — 类型 — 含义)、"
+        "**Returns**(类型 — 含义)、**Raises**(若有)。只依据代码,不臆测;"
+        "不要复述代码,不要重复签名。"
+    ),
+))
+
+register(Skill(
     name="qa",
     kind="agent",
     description="代码问答:基于检索片段回答,带 file:line 引用",

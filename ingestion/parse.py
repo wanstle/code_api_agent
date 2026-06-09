@@ -131,6 +131,10 @@ def _extract_symbols(
                         start_line=node.start_position().row + 1,
                         end_line=node.end_position().row + 1,
                         parent=parent_class,
+                        signature=_signature(node, ref),
+                        docstring=_docstring(node, ref, language),
+                        decorators=_decorators(node, ref),
+                        calls=_calls(node, ref) if effective in ("function", "method") else [],
                     )
                 )
                 if kind == "class":
@@ -140,6 +144,158 @@ def _extract_symbols(
 
     visit(root, None)
     return symbols
+
+
+def _decode(ref: bytes, a: int, b: int) -> str:
+    return ref[a:b].decode("utf-8", "replace")
+
+
+def _signature(node, ref: bytes) -> str:
+    """逐字签名:节点起点 → body 起点 之间的源码(语言无关)。
+
+    去掉尾部的块起始符(`:` / `{`),多行签名原样保留。
+    """
+    body = node.child_by_field_name("body")
+    if body is not None:
+        sig = _decode(ref, node.start_byte(), body.start_byte())
+    else:
+        # 无 body 字段(接口/结构体/类型等):取节点首行
+        whole = _decode(ref, node.start_byte(), node.end_byte())
+        sig = whole.splitlines()[0] if whole else ""
+    sig = sig.strip()
+    while sig.endswith((":", "{", "=", "(")):
+        sig = sig[:-1].strip()
+    return sig
+
+
+def _docstring(node, ref: bytes, language: str) -> Optional[str]:
+    """已有文档:Python 取 body 首个字符串字面量;类 C 语言取前导 /** */ 注释。"""
+    if language in ("python",):
+        return _python_docstring(node, ref)
+    return _preceding_jsdoc(node, ref)
+
+
+def _python_docstring(node, ref: bytes) -> Optional[str]:
+    body = node.child_by_field_name("body")
+    if body is None or body.named_child_count() == 0:
+        return None
+    first = body.named_child(0)
+    # 文档串可能直接是 string 节点,或包在 expression_statement 里(取决于 grammar 版本)
+    s = None
+    if first.kind() == "string":
+        s = first
+    elif first.kind() == "expression_statement" and first.named_child_count() > 0:
+        cand = first.named_child(0)
+        if cand.kind() == "string":
+            s = cand
+    if s is None:
+        return None
+    return _clean_pystring(_decode(ref, s.start_byte(), s.end_byte()))
+
+
+def _preceding_jsdoc(node, ref: bytes) -> Optional[str]:
+    """JS/TS/Java 等:取紧邻在符号前的 /** ... */ 块注释。"""
+    parent = node.parent()
+    if parent is None:
+        return None
+    prev = None
+    for i in range(parent.child_count()):
+        ch = parent.child(i)
+        if ch.start_byte() == node.start_byte() and ch.end_byte() == node.end_byte():
+            break
+        prev = ch
+    if prev is not None and prev.kind() in ("comment", "block_comment"):
+        txt = _decode(ref, prev.start_byte(), prev.end_byte())
+        if txt.lstrip().startswith("/**"):
+            return _clean_jsdoc(txt)
+    return None
+
+
+def _decorators(node, ref: bytes) -> list[str]:
+    """Python 装饰器:父节点为 decorated_definition 时收集其 decorator 子节点。"""
+    parent = node.parent()
+    if parent is None or parent.kind() != "decorated_definition":
+        return []
+    out = []
+    for i in range(parent.child_count()):
+        ch = parent.child(i)
+        if ch.kind() == "decorator":
+            out.append(_decode(ref, ch.start_byte(), ch.end_byte()).strip())
+    return out
+
+
+# 各语言里"函数调用"节点的 kind(用于抽调用名)
+_CALL_KINDS = {
+    "call", "call_expression", "method_invocation",
+    "function_call_expression", "member_call_expression", "scoped_call_expression",
+}
+_ID_KINDS = {"identifier", "field_identifier", "property_identifier", "type_identifier"}
+
+
+def _calls(node, ref: bytes) -> list[str]:
+    """抽取函数体内调用到的名字(取被调表达式里最后一个标识符)。
+
+    例:foo() → foo;self.parse_args() → parse_args;a.b.c() → c。
+    只取名字、不解析归属;库内解析交给 callgraph(用符号表)。
+    """
+    body = node.child_by_field_name("body")
+    if body is None:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def walk(n) -> None:
+        if n.kind() in _CALL_KINDS:
+            callee = (
+                n.child_by_field_name("function")
+                or n.child_by_field_name("name")
+                or (n.named_child(0) if n.named_child_count() > 0 else None)
+            )
+            nm = _last_identifier(callee, ref) if callee is not None else None
+            if nm and nm not in seen:
+                seen.add(nm)
+                names.append(nm)
+        for i in range(n.child_count()):
+            walk(n.child(i))
+
+    walk(body)
+    return names
+
+
+def _last_identifier(node, ref: bytes) -> Optional[str]:
+    """返回子树里最后出现的标识符文本(用于从 a.b.c 里取 c)。"""
+    found = [None]
+
+    def walk(n) -> None:
+        if n.kind() in _ID_KINDS:
+            found[0] = _decode(ref, n.start_byte(), n.end_byte())
+        for i in range(n.child_count()):
+            walk(n.child(i))
+
+    walk(node)
+    return found[0]
+
+
+def _clean_pystring(raw: str) -> str:
+    s = raw.strip()
+    # 去掉字符串前缀 r/b/f/u(可组合)
+    while s and s[0] in "rRbBfFuU" and len(s) > 1 and s[1] in "rRbBfFuU\"'":
+        s = s[1:]
+    for q in ('"""', "'''", '"', "'"):
+        if s.startswith(q) and s.endswith(q) and len(s) >= 2 * len(q):
+            s = s[len(q) : -len(q)]
+            break
+    return s.strip()
+
+
+def _clean_jsdoc(raw: str) -> str:
+    s = raw.strip()
+    if s.startswith("/**"):
+        s = s[3:]
+    if s.endswith("*/"):
+        s = s[:-2]
+    lines = [ln.strip().lstrip("*").strip() for ln in s.splitlines()]
+    return "\n".join(ln for ln in lines if ln).strip()
 
 
 def _node_name(node, ref: bytes) -> Optional[str]:

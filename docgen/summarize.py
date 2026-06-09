@@ -22,14 +22,29 @@ MAX_SYMBOLS_PER_FILE = 10
 @dataclass
 class DocResult:
     name: str
-    modules: dict[str, str] = field(default_factory=dict)   # module -> 摘要
-    architecture: str = ""                                  # 仓库整体架构文档
+    modules: dict[str, str] = field(default_factory=dict)        # module -> 摘要
+    module_skills: dict[str, str] = field(default_factory=dict)  # module -> 所用 skill
+    architecture: str = ""                                      # 仓库整体架构文档
     meta: dict = field(default_factory=dict)
 
 
 def _module_of(path: str) -> str:
     parts = path.split("/")
     return "/".join(parts[:2]) if len(parts) > 2 else parts[0]
+
+
+# 关键字 → skill 的目录路由(完整版:前后端各用对应 skill 分析)
+_FRONTEND_KW = ("frontend", "client", "webapp", "/web", "/ui", "components", "views", "pages")
+_BACKEND_KW = ("backend", "server", "/api", "service", "controllers", "routes", "models")
+
+
+def _skill_for_module(module: str) -> str:
+    m = module.lower()
+    if any(k in m for k in _FRONTEND_KW):
+        return "frontend"
+    if any(k in m for k in _BACKEND_KW):
+        return "backend"
+    return "architecture"
 
 
 def _load(index_name: str):
@@ -73,16 +88,18 @@ def generate(index_name: str, progress=print) -> DocResult:
     session = SkillSession(index_name)
     out = DocResult(name=index_name, meta=meta)
 
-    # --- map:逐模块摘要 ---
+    # --- map:逐模块摘要(按目录路由到 frontend/backend/architecture skill)---
     for mod, files in modules:
         ctx = _module_context(files, top)
         task = (
             f"以下是模块 `{mod}` 的文件与关键符号:\n{ctx}\n\n"
             f"请用 4-6 行 Markdown 总结该模块的职责、关键组件、对外提供的能力。"
         )
-        res = session.run("architecture", task, max_tokens=400, temperature=0.2)
+        skill = _skill_for_module(mod)          # ← 完整版:前后端各用对应 skill
+        res = session.run(skill, task, max_tokens=400, temperature=0.2)
         out.modules[mod] = res.text.strip()
-        progress(f"  [map] 模块摘要: {mod}  (cached_tokens={res.cached_tokens})")
+        out.module_skills[mod] = skill
+        progress(f"  [map] 模块摘要: {mod}  (skill={skill}, cached_tokens={res.cached_tokens})")
 
     # --- reduce:汇总成整体架构文档 ---
     digest = "\n".join(f"### {m}\n{s}" for m, s in out.modules.items())

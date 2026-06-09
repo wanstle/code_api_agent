@@ -20,7 +20,7 @@ def _safe(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
 
 
-def render(doc: DocResult, base: str = DOCS_BASE) -> Path:
+def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict | None = None) -> Path:
     root = Path(base) / doc.name
     (root / "modules").mkdir(parents=True, exist_ok=True)
 
@@ -42,13 +42,28 @@ def render(doc: DocResult, base: str = DOCS_BASE) -> Path:
     nav_modules = []
     for mod, summary in doc.modules.items():
         fn = _safe(mod) + ".md"
-        (root / "modules" / fn).write_text(f"# {mod}\n\n{summary}\n", "utf-8")
+        skill = doc.module_skills.get(mod, "architecture")
+        header = f"# {mod}\n\n> 🔎 分析视角:`{skill}` skill\n\n{summary}\n"
+        (root / "modules" / fn).write_text(header, "utf-8")
         nav_modules.append((mod, f"modules/{fn}"))
+
+    # API 参考页(可选)
+    nav_api = []
+    if api_pages:
+        (root / "api").mkdir(parents=True, exist_ok=True)
+        for mod, md in api_pages.items():
+            fn = _safe(mod) + ".md"
+            (root / "api" / fn).write_text(md, "utf-8")
+            nav_api.append((mod, f"api/{fn}"))
 
     # mkdocs.yml
     nav_lines = ["nav:", "  - 架构总览: index.md", "  - 模块:"]
     for mod, path in nav_modules:
         nav_lines.append(f"      - {mod}: {path}")
+    if nav_api:
+        nav_lines.append("  - API 参考:")
+        for mod, path in nav_api:
+            nav_lines.append(f"      - {mod}: {path}")
     mkdocs_yml = [
         f"site_name: {doc.name} 代码文档",
         "theme:",

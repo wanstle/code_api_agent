@@ -20,6 +20,18 @@ class SymbolInfo:
     start_line: int    # 1-based
     end_line: int
     parent: Optional[str] = None   # 所属类名(方法时填)
+    # --- API doc 用:确定性抽取,不经 LLM ---
+    signature: str = ""                          # 逐字签名(节点起点→body 之间的源码)
+    docstring: Optional[str] = None              # 已有 docstring / JSDoc(逐字,作者权威文档)
+    decorators: list[str] = field(default_factory=list)  # 装饰器(如 @property)
+    calls: list[str] = field(default_factory=list)       # 函数体里调用到的名字(原始,未解析)
+
+    @property
+    def is_private(self) -> bool:
+        return self.name.startswith("_")
+
+    def qualified_name(self) -> str:
+        return f"{self.parent}.{self.name}" if self.parent else self.name
 
     def location(self) -> str:
         """返回 file:line 形式的引用,贯穿全项目的溯源格式。"""

@@ -12,7 +12,6 @@ system 始终是稳定仓库前缀(跨轮复用 KV);对话逐轮追加,前缀部
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -23,17 +22,18 @@ from skills.base import get as get_skill
 from skills.prefix import build_repo_prefix
 from qa.tools import RepoTools
 
-MAX_ITERS = 5
+MAX_ITERS = 8
 
 _PROTOCOL = (
     "你可以调用只读工具来查证代码。**每步只输出一个 JSON 对象,不要输出任何其它文字**:\n"
-    '- 读文件: {"action":"read_file","path":"<相对路径>","start":1,"end":40}\n'
+    '- 定位符号: {"action":"find_symbol","name":"<函数/类/方法名>"}  ← 优先用它直接跳到定义\n'
+    '- 读文件: {"action":"read_file","path":"<相对路径>","start":1,"end":60}\n'
     '- 搜索:   {"action":"grep","pattern":"<正则>"}\n'
     '- 列目录: {"action":"list_dir","path":"<相对路径>"}\n'
     '- 最终答案: {"action":"final","answer":"<答案,关键处带 文件:行号 引用>"}\n'
-    "信息足够时立即输出 final。\n"
-    "注意:**优先依据源码而非测试文件**;若种子片段主要来自测试或不足以确定答案,"
-    "先用 grep/read_file 在源码中确认,再 final。"
+    "高效策略:**先用 find_symbol 拿到目标的 文件:行号,再 read_file 精确读那几行**,"
+    "不要从头顺序翻大文件。信息足够立即 final。\n"
+    "注意:优先依据源码而非测试文件;答案关键结论必须带 `文件:行号` 引用。"
 )
 
 
@@ -47,17 +47,21 @@ class AgentResult:
 
 
 def _extract_json(text: str) -> Optional[dict]:
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
-    candidate = m.group(1) if m else None
-    if candidate is None:
-        i, j = text.find("{"), text.rfind("}")
-        candidate = text[i : j + 1] if i != -1 and j > i else None
-    if not candidate:
-        return None
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        return None
+    """取文本里**第一个合法 JSON 对象**。
+
+    模型有时一条响应吐多个 JSON 动作;用 raw_decode 从每个 '{' 处尝试解析,
+    成功即返回首个 dict —— 避免"首{到末}"跨多个对象导致解析失败。
+    """
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch == "{":
+            try:
+                obj, _ = decoder.raw_decode(text[i:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                return obj
+    return None
 
 
 class QAAgent:
@@ -66,6 +70,19 @@ class QAAgent:
         self.client = client or LlamaClient()
         self.retriever = Retriever(index_name)
         self.tools = RepoTools(self.retriever.root)
+
+    def _find_symbol(self, name: str) -> str:
+        """查符号索引,直接返回定义位置(file:line),让 agent 精准跳转。"""
+        if not name:
+            return "[需要 name]"
+        rows = self.retriever._si.lookup(name, limit=8)
+        if not rows:
+            return f"[未找到符号: {name}]"
+        return "\n".join(
+            f"{r['kind']} {(r['parent'] + '.' if r['parent'] else '') + r['name']}"
+            f" @ {r['file']}:{r['start_line']}-{r['end_line']}"
+            for r in rows
+        )
 
     def ask(self, question: str, k: int = 5, max_iters: int = MAX_ITERS) -> AgentResult:
         # 预检索种子上下文(混合式:先给种子,再让 agent 补充)
@@ -101,7 +118,12 @@ class QAAgent:
                 result.steps.append("final")
                 return result
 
-            if action in ("read_file", "grep", "list_dir"):
+            if action == "find_symbol":
+                obs = self._find_symbol(obj.get("name", ""))
+                result.steps.append(f'find_symbol({obj.get("name", "")})')
+                messages.append({"role": "assistant", "content": res.text})
+                messages.append({"role": "user", "content": f"符号定位结果:\n{obs}\n\n请继续(JSON)。"})
+            elif action in ("read_file", "grep", "list_dir"):
                 obs = self.tools.dispatch(action, obj)
                 summary = obj.get("path") or obj.get("pattern") or ""
                 result.steps.append(f"{action}({summary})")
@@ -111,8 +133,10 @@ class QAAgent:
                 messages.append({"role": "assistant", "content": res.text})
                 messages.append({"role": "user", "content": "动作无效,请输出合法 JSON 动作。"})
 
-        # 迭代用尽:强制给出最终答案
-        messages.append({"role": "user", "content": "请基于以上信息给出最终答案(纯文本,带 文件:行号 引用)。"})
+        # 迭代用尽:强制给出最终答案(仍要求带引用)
+        messages.append({"role": "user", "content":
+            "已达查证上限。请基于以上信息给出最终答案,**关键结论必须带 `文件:行号` 引用**;"
+            "信息不足处如实说明,不要编造。"})
         res = self.client.chat(messages, max_tokens=600, temperature=0.1, cache_prompt=True)
         result.answer = res.text.strip()
         result.last_cached_tokens = res.cached_tokens
