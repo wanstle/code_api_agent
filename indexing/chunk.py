@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import OrderedDict
 from pathlib import Path
 
 from common.models import RepoMap
@@ -44,7 +45,7 @@ def chunk_repo(repo: RepoMap) -> list[CodeChunk]:
         except OSError:
             continue
         chunks.extend(_chunk_file(fi.path, fi.language, lines, fi))
-    return chunks
+    return list(OrderedDict((c.id, c) for c in chunks).values())
 
 
 def _chunk_file(path: str, language: str, lines: list[str], fi) -> list[CodeChunk]:

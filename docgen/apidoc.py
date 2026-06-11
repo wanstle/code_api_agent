@@ -134,7 +134,7 @@ def generate_api(
                     _save(); abort_reason = "lowmem"
                     entry = APIEntry(s, "", "none", callee_keys)
                 except Exception as e:  # 服务崩溃/连接中断等
-                    progress(f"  ⚠ 生成失败:{type(e).__name__};已保存进度,提前停止")
+                    progress(f"  ⚠ 生成失败:{type(e).__name__}: {e};已保存进度,提前停止")
                     _save(); abort_reason = "error"
                     entry = APIEntry(s, "", "none", callee_keys)
                 else:

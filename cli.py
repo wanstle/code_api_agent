@@ -74,8 +74,8 @@ def doc(
                 res = generate_api(name, max_llm=max_llm, progress=lambda m: console.print(m))
                 if res.pending == 0 or not loop:
                     break
-                if prev_pending is not None and res.pending >= prev_pending and res.generated == 0:
-                    console.print("[yellow]本批无进展(内存/服务受限),停止续跑。已保存进度,稍后可重试。[/yellow]")
+                if prev_pending is not None and res.pending >= prev_pending:
+                    console.print("[yellow]本批待生成数未下降,停止续跑以避免重复生成。已保存进度,稍后可重试。[/yellow]")
                     break
                 prev_pending = res.pending
                 if managed and res.status in ("lowmem", "error"):

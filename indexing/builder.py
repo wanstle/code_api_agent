@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from common.models import RepoMap
@@ -38,6 +39,8 @@ def build_index(source: str, progress=print) -> Path:
     progress(f"代码感知分块: {len(chunks)} chunks")
 
     idir = index_dir_for(repo.name)
+    if idir.exists():
+        shutil.rmtree(idir)
     idir.mkdir(parents=True, exist_ok=True)
 
     # 向量索引
