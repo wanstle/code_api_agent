@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from indexing.symbol_index import SymbolIndex
 from indexing.vector_store import VectorStore
 
 INDEX_BASE = ".cache/index"
+EMBED_BATCH_SIZE = int(os.environ.get("EMBED_BATCH_SIZE", "512"))
 
 
 def index_dir_for(name: str) -> Path:
@@ -45,10 +47,14 @@ def build_index(source: str, progress=print) -> Path:
 
     # 向量索引
     embedder = Embedder()
-    progress(f"embedding({embedder.model_name}, CPU) …")
-    vectors = embedder.embed([c.embed_text() for c in chunks])
     vs = VectorStore(str(idir / "chroma"))
-    vs.add(chunks, vectors)
+    progress(f"embedding({embedder.model_name}, CPU, batch={EMBED_BATCH_SIZE}) …")
+    for start in range(0, len(chunks), EMBED_BATCH_SIZE):
+        end = min(start + EMBED_BATCH_SIZE, len(chunks))
+        batch = chunks[start:end]
+        vectors = embedder.embed([c.embed_text() for c in batch], batch_size=EMBED_BATCH_SIZE)
+        vs.add(batch, vectors)
+        progress(f"embedding/write: {end}/{len(chunks)} chunks")
     progress(f"向量索引写入: {vs.count()} 条")
 
     # 符号索引

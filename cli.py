@@ -1,7 +1,8 @@
 """RepoLens 统一命令行入口(G. Serving / 编排)。
 
     python -m cli index <repo-url-or-path>      # 解析 + 建索引(D1+D2)
-    python -m cli doc   <repo-name>             # 生成 MkDocs 文档(D4)
+    python -m cli lens  <repo-name>             # 生成模块分析视角 lenses.json
+    python -m cli doc   <repo-name> --use-lens  # 带 lens 生成 MkDocs 文档(D4)
     python -m cli ask   <repo-name> "问题"      # qa Agent 工具循环问答(D5)
     python -m cli skill <repo-name> <skill> [任务]   # 跑指定 Skill(D3)
 
@@ -126,7 +127,7 @@ def _print_lenses(lenses: dict) -> None:
         console.print("[yellow]还没有 lenses(先生成)。[/yellow]")
         return
     for mod, l in lenses.items():
-        tag = {"ai": "AI", "human": "人工", "fallback": "待补"}.get(l.source, l.source)
+        tag = {"ai": "AI", "human": "人工", "fallback": "待补", "low-signal": "低信号"}.get(l.source, l.source)
         console.print(f"\n[bold cyan]{mod}[/bold cyan]  [dim]({tag})[/dim]")
         console.print(f"  [bold]role[/bold]: {l.role}")
         if l.focus:

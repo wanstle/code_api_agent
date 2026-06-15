@@ -121,19 +121,38 @@ HF_ENDPOINT=https://hf-mirror.com python -m cli index https://github.com/OWNER/R
 
 ## 3. 生成或重新生成文档
 
+推荐流程是先生成模块提纲 lens,再带着 lens 生成文档：
+
+```bash
+python -m cli lens <repo-name>
+python -m cli doc <repo-name> --use-lens
+```
+
+`lens` 会写入：
+
+```text
+.cache/index/<repo-name>/lenses.json
+```
+
+你可以在生成文档前人工编辑 `lenses.json`。如果某个模块由人工确认过,把对应条目的 `source` 改成 `"human"`；后续 `python -m cli lens <repo-name>` 默认会保留已有内容,只有加 `--force` 才会覆盖。`python -m cli doc <repo-name> --use-lens` 只会注入 `source` 为 `"ai"` 或 `"human"` 的提纲。
+
 如果 `llama-server` 已经手动启动，推荐使用外部 server 模式：
 
 ```bash
-python -m cli doc <repo-name>
+python -m cli doc <repo-name> --use-lens
 ```
 
 如果希望 CLI 自动启动并停止模型服务，使用 managed 模式：
 
 ```bash
-python -m cli doc <repo-name> \
+python -m cli lens <repo-name> --managed \
+  --model /home/sht8/xiaojx/code_api_agent/models/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf \
+  --ctx 8192
+
+python -m cli doc <repo-name> --use-lens \
   --managed \
   --model /home/sht8/xiaojx/code_api_agent/models/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf \
-  --ctx 262144
+  --ctx 8192
 ```
 
 文档生成是可续跑的。API 细项会写入：
@@ -149,7 +168,7 @@ python -m cli doc <repo-name> \
 ```bash
 rm -f .cache/index/<repo-name>/apidoc_cache.json
 rm -rf docs/<repo-name>
-python -m cli doc <repo-name>
+python -m cli doc <repo-name> --use-lens --api --complete
 ```
 
 注意：不要删除 `.cache/index/<repo-name>/meta.json`、`symbols.db` 或 `chroma/`，除非你也准备重新执行 `cli index`。

@@ -19,9 +19,9 @@ from skills.session import SkillSession
 
 MAX_MODULES = 12
 MAX_FILES_PER_MODULE = 8
-MAX_SYMBOLS_PER_FILE = 3           # 每文件最多展示的符号数
-MAX_SYMBOL_SNIPPET_LINES = 18      # 单个符号截取的源码最大行数
-MAX_MODULE_CONTEXT_CHARS = 10000  # 适配 8k ctx: prefix + rules + module material
+MAX_SYMBOLS_PER_FILE = 8           # 每文件最多展示的符号数
+MAX_SYMBOL_SNIPPET_LINES = 24      # 单个符号截取的源码最大行数
+MAX_MODULE_CONTEXT_CHARS = 18000  # prefix + rules + module material
 MAX_REDUCE_DIGEST_CHARS = 12000
 
 
@@ -59,15 +59,15 @@ def _load(index_name: str):
 
     rows = conn.execute(
         "SELECT file, name, kind, start_line, end_line, parent FROM symbols "
-        "WHERE parent IS NULL "
-        "ORDER BY file, CASE kind WHEN 'class' THEN 0 ELSE 1 END, start_line"
+        "ORDER BY file, CASE kind WHEN 'class' THEN 0 WHEN 'function' THEN 1 ELSE 2 END, start_line"
     ).fetchall()
 
     for r in rows:
         fpath = r["file"]
-        top.setdefault(fpath, []).append(r["name"])
+        display_name = f"{r['parent']}.{r['name']}" if r["parent"] else r["name"]
+        top.setdefault(fpath, []).append(display_name)
         detail.setdefault(fpath, []).append({
-            "name": r["name"], "kind": r["kind"], "line": r["start_line"],
+            "name": display_name, "kind": r["kind"], "line": r["start_line"],
         })
 
         # 读取该符号的真实源码
@@ -83,7 +83,7 @@ def _load(index_name: str):
         code = "\n".join(src_lines[start:end]) if src_lines else "(源码不可用)"
 
         snippets.setdefault(fpath, []).append(
-            (r["name"], r["kind"], r["start_line"], code)
+            (display_name, r["kind"], r["start_line"], code)
         )
 
     conn.close()
@@ -116,13 +116,16 @@ def _module_context(
 
         # 分类展示
         classes = [(s["name"], s["line"]) for s in syms if s["kind"] == "class"]
-        funcs = [(s["name"], s["line"]) for s in syms if s["kind"] != "class"]
+        funcs = [(s["name"], s["line"]) for s in syms if s["kind"] == "function"]
+        methods = [(s["name"], s["line"]) for s in syms if s["kind"] == "method"]
 
         parts = []
         if classes:
-            parts.append("类: " + ", ".join(f"{n}(:{l})" for n, l in classes))
+            parts.append("类: " + ", ".join(f"{n}(:{l})" for n, l in classes[:20]))
         if funcs:
-            parts.append("函数: " + ", ".join(f"{n}(:{l})" for n, l in funcs))
+            parts.append("函数: " + ", ".join(f"{n}(:{l})" for n, l in funcs[:20]))
+        if methods:
+            parts.append("方法: " + ", ".join(f"{n}(:{l})" for n, l in methods[:30]))
         sym_str = "; ".join(parts) if parts else "(无顶层符号)"
 
         lines.append(

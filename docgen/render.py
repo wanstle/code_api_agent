@@ -1464,132 +1464,101 @@ EXTRA_CSS = """\
 # Index generation
 # ---------------------------------------------------------------------------
 
-def _generate_api_index(
-    doc: DocResult, modules_order: list[str]
-) -> str:
-    """Generate the API quick-reference page.
+def _entries_from_api_pages(api_pages: dict[str, str] | None) -> list[tuple[str, str, str, str]]:
+    """Extract symbols from deterministic Detailed API pages.
 
-    Returns:
-        quick_md: API quick reference page content.
+    Returns tuples of (name, module, kind, anchor). This is more reliable than
+    scraping LLM-generated module summaries because Detailed API pages are
+    driven by symbols.db.
     """
-    # --- Symbol extraction with quality filtering ---
-    # Patterns that are NOT real symbols (Chinese/English section headers, metadata keys)
-    _NON_SYMBOL_PATTERNS = re.compile(
-        r"^(module|class|function|overview|包|项目|架构|"
-        r"模块|类|函数|文件列表|职责|顶层|"
-        r"模块概述|类参考|函数参考|快速概览|构造方法|字段|"
-        r"名称|默认值|描述|api|"
-        r"table of contents|contents|"
-        r"summary|description|parameters|"
-        r"returns?|see also|constructor|fields|methods|"
-        r"inheritance|known subclasses|type|source|package|"
-        r"quick summary|typical usage|raises)$",
-        re.IGNORECASE
+    if not api_pages:
+        return []
+    entries: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for mod, md in api_pages.items():
+        current_anchor = ""
+        for line in md.splitlines():
+            m_anchor = re.match(r'<a id="([^"]+)"></a>', line.strip())
+            if m_anchor:
+                current_anchor = m_anchor.group(1)
+                continue
+            m = re.match(r"^###\s+`([^`]+)`\s+·\s+(\w+)", line.strip())
+            if not m or not current_anchor:
+                continue
+            qual_name, kind = m.groups()
+            name = qual_name.split(".")[-1]
+            key = (name, mod, current_anchor)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append((name, mod, kind, current_anchor))
+    return entries
+
+
+def _entries_from_module_summaries(doc: DocResult) -> list[tuple[str, str, str, str]]:
+    """Fallback symbol extraction from module pages when Detailed API is disabled."""
+    entries: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    non_symbol = re.compile(
+        r"^(module|class|function|overview|包|项目|架构|模块|类|函数|文件列表|职责|顶层|"
+        r"模块概述|类参考|函数参考|快速概览|构造方法|字段|方法|参数|返回值|说明|"
+        r"summary|description|parameters|returns?|see also|constructor|fields|methods|"
+        r"inheritance|type|source|package|quick summary|typical usage|raises)$",
+        re.IGNORECASE,
     )
-
-    # Patterns that are obviously Chinese-only boilerplate (not code symbols)
-    _CN_BOILERPLATE = re.compile(
-        r"^(概述|依赖|关系|数据流|调用|索引|速查|"
-        r"核心|关键|组件|简介|规模|技术栈|"
-        r"总览|导航|浏览|按模块|"
-        r"快速概览|类参考|函数参考|构造方法|字段|"
-        r"方法|参数|返回值|说明|"
-        r"名称|类型|默认值|描述|"
-        r"继承|子类|构造|属性)$"
-    )
-
-    class_entries: list[tuple[str, str, str]] = []
-    func_entries: list[tuple[str, str, str]] = []
-
-    # Full-heading patterns for section headers that should NOT be treated as symbols.
-    # These catch cases where the first word of a heading accidentally looks like a class/function name
-    # (e.g. "## Quick Summary" → "Quick" gets extracted but is NOT a symbol).
-    _HEADING_BLACKLIST = re.compile(
-        r"^(quick\s*summary|typical\s*usage|module\s*overview|"
-        r"class(?:es)?\s*reference|function(?:s)?\s*reference|"
-        r"快速概览|类参考|函数参考|构造方法|字段|方法|"
-        r"on\s*this\s*page|table\s*of\s*contents)$",
-        re.IGNORECASE
-    )
-
     for mod, summary in doc.modules.items():
         for line in summary.splitlines():
-            # Match H2/H3/H4 headings as potential symbol names
-            m = re.match(r"^(?:#{2,4})\s+(?:`([^`]+)`|(\S+))", line)
-            if m:
-                name = m.group(1) or m.group(2)
-                # Clean backtick-quoted annotations
-                name = re.sub(r"`[^`]*`", "", name).strip()
-                # Remove leading/trailing backticks
-                name = name.strip("`")
-
-                if not name or len(name) < 2:
-                    continue
-                # Filter out non-symbols
-                if _NON_SYMBOL_PATTERNS.match(name):
-                    continue
-                if _CN_BOILERPLATE.match(name):
-                    continue
-                # Must look like a code identifier
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
-                    continue
-                # Filter out full headings that are section headers (e.g. "Quick Summary")
-                full_heading = re.sub(r"^#+\s*", "", line).strip()
-                full_heading_clean = re.sub(r"`[^`]*`", "", full_heading).strip().lower()
-                if _HEADING_BLACKLIST.match(full_heading_clean):
-                    continue
-
-                kind = "class" if name[0].isupper() else "function"
-                # But exclude known patterns
-                if kind == "class":
-                    # Only add if not already present for this module
-                    key = (name, mod)
-                    if not any(e[0] == name and e[1] == mod for e in class_entries):
-                        class_entries.append((name, mod, kind))
-                else:
-                    key = (name, mod)
-                    if not any(e[0] == name and e[1] == mod for e in func_entries):
-                        func_entries.append((name, mod, kind))
-
-    # Sort entries alphabetically
-    class_entries.sort(key=lambda x: x[0].lower())
-    func_entries.sort(key=lambda x: x[0].lower())
+            m = re.match(r"^(?:#{2,4})\s+(?:`([^`]+)`|([A-Za-z_][A-Za-z0-9_]*))", line)
+            if not m:
+                continue
+            name = (m.group(1) or m.group(2)).strip("`")
+            if non_symbol.match(name) or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+                continue
+            key = (name, mod)
+            if key in seen:
+                continue
+            seen.add(key)
+            kind = "class" if name[:1].isupper() else "func"
+            entries.append((name, mod, kind, name.lower().replace(".", "")))
+    return entries
 
 
-    # --- Build api-index.md with styled HTML tables ---
-    def _render_index_table(
-        title: str, col1: str, col2: str,
-        entries: list[tuple[str, str]], link_prefix: str = "../modules/"
-    ) -> list[str]:
-        """Build a styled HTML table for the index page."""
+def _generate_api_index(
+    doc: DocResult, modules_order: list[str], api_pages: dict[str, str] | None = None
+) -> str:
+    """Generate the API quick-reference page from deterministic API pages first."""
+    api_entries = _entries_from_api_pages(api_pages)
+    using_api_pages = bool(api_entries)
+    if not api_entries:
+        api_entries = _entries_from_module_summaries(doc)
+
+    class_entries = [e for e in api_entries if e[2] == "class"]
+    func_entries = [e for e in api_entries if e[2] != "class"]
+    class_entries.sort(key=lambda x: (x[0].lower(), x[1].lower()))
+    func_entries.sort(key=lambda x: (x[0].lower(), x[1].lower()))
+
+    def _render_index_table(title: str, col1: str, col2: str, entries: list[tuple[str, str, str, str]]) -> list[str]:
         if not entries:
             return []
+        link_root = "api" if using_api_pages else "modules"
         html_lines = [
             f"## {title}",
             "",
-            f'<div class="api-table-container api-index-table" markdown="0">',
-            f"<table>",
+            '<div class="api-table-container api-index-table" markdown="0">',
+            "<table>",
             f"<thead><tr><th>{col1}</th><th>{col2}</th></tr></thead>",
-            f"<tbody>",
+            "<tbody>",
         ]
-        for name, mod in entries:
+        for name, mod, _kind, anchor in entries:
             fn = _safe(mod)
             mod_label = _clean_nav_label(mod)
-            anchor = name.lower().replace(".", "")
-            # Use directory URLs (no .md) — the site uses use_directory_urls: true,
-            # and raw HTML <a> tags inside markdown="0" divs are NOT rewritten by MkDocs.
             html_lines.append(
                 f'<tr>'
-                f'<td class="api-index-name"><code><a href="{link_prefix}{fn}/#{anchor}">'
-                f'{name}</a></code></td>'
-                f'<td><a href="{link_prefix}{fn}/">{mod_label}</a></td>'
+                f'<td class="api-index-name"><code><a href="{link_root}/{fn}/#{anchor}">{name}</a></code></td>'
+                f'<td><a href="{link_root}/{fn}/">{mod_label}</a></td>'
                 f'</tr>'
             )
-        html_lines.extend([
-            "</tbody>",
-            "</table>",
-            "</div>",
-        ])
+        html_lines.extend(["</tbody>", "</table>", "</div>"])
         return html_lines
 
     quick_lines = [
@@ -1599,20 +1568,11 @@ def _generate_api_index(
         "",
     ]
     if class_entries:
-        quick_lines.extend(
-            _render_index_table("Classes", "Class", "Module",
-                                [(n, m) for n, m, _ in class_entries])
-        )
+        quick_lines.extend(_render_index_table("Classes", "Class", "Module", class_entries))
         quick_lines.append("")
     if func_entries:
-        quick_lines.extend(
-            _render_index_table("Functions", "Function", "Module",
-                                [(n, m) for n, m, _ in func_entries])
-        )
-
-    quick_md = "\n".join(quick_lines)
-
-    return quick_md
+        quick_lines.extend(_render_index_table("Functions", "Function", "Module", func_entries))
+    return "\n".join(quick_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1868,10 +1828,8 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         page = [
             f"# {mod_label}",
             "",
-            f'<span class="md-source-file">'
-            f'[:octicons-git-branch-24: Architecture](../architecture.md) &nbsp;|&nbsp; '
-            f'[:octicons-list-unordered-24: API Quick Ref](../api-index.md)'
-            f'</span>',
+            f'<span class="md-source-file"><a href="../architecture/">Architecture</a> &nbsp;|&nbsp; '
+            f'<a href="../api-index/">API Quick Ref</a></span>',
             "",
             "---",
             "",
@@ -1881,10 +1839,8 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         page.append("")
         page.append("---")
         page.append(
-            f'<span class="md-source-file">'
-            f'[:octicons-git-branch-24: Architecture](../architecture.md) &nbsp;|&nbsp; '
-            f'[:octicons-list-unordered-24: API Quick Ref](../api-index.md)'
-            f'</span>'
+            f'<span class="md-source-file"><a href="../architecture/">Architecture</a> &nbsp;|&nbsp; '
+            f'<a href="../api-index/">API Quick Ref</a></span>'
         )
 
         (modules_dir / fn).write_text("\n".join(page), "utf-8")
@@ -1897,7 +1853,7 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
             (api_dir / fn).write_text(_normalize_markdown(md), "utf-8")
 
     # --- api-index.md ---
-    quick_md = _generate_api_index(doc, modules_order)
+    quick_md = _generate_api_index(doc, modules_order, api_pages=api_pages)
     (content_dir / "api-index.md").write_text(quick_md, "utf-8")
 
     # --- architecture.md ---
@@ -1910,9 +1866,7 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
     arch_lines = [
         f"# Architecture: {doc.name}",
         "",
-        f'<span class="md-source-file">'
-        f'[:octicons-list-unordered-24: API Quick Ref](api-index.md)'
-        f'</span>',
+        f'<span class="md-source-file"><a href="api-index/">API Quick Ref</a></span>',
         "",
         "---",
         "",
@@ -2174,6 +2128,11 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         "  - pymdownx.snippets",
         "  - pymdownx.superfences",
         "  - pymdownx.details",
+        "  - attr_list",
+        "  - md_in_html",
+        "  - pymdownx.emoji:",
+        "      emoji_index: !!python/name:material.extensions.emoji.twemoji",
+        "      emoji_generator: !!python/name:material.extensions.emoji.to_svg",
         "  - pymdownx.tabbed:",
         "      alternate_style: true",
         "  - admonition",

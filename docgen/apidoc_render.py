@@ -11,7 +11,6 @@ _EXT_LANG = {
     ".tsx": "tsx", ".go": "go", ".rs": "rust", ".java": "java", ".c": "c",
     ".cpp": "cpp", ".rb": "ruby", ".php": "php", ".cs": "csharp",
 }
-_SOURCE_LABEL = {"none": "待生成"}   # ai 来源不再加标注(现在描述均为 AI 生成)
 
 
 def _safe(name: str) -> str:
@@ -62,8 +61,13 @@ def _callees_md(entry: APIEntry, by_key: dict[str, APIEntry]) -> str:
 
 def render_module_md(module: str, entries: list[APIEntry], by_key: dict[str, APIEntry]) -> str:
     out = [f"# API 参考:`{module}`", ""]
+    pending: list[APIEntry] = []
     current_file = None
     for e in entries:
+        if e.doc_source == "none" and not e.body_md:
+            pending.append(e)
+            continue
+
         s = e.symbol
         if s.file != current_file:
             out.append(f"\n## `{s.file}`\n")
@@ -80,10 +84,25 @@ def render_module_md(module: str, entries: list[APIEntry], by_key: dict[str, API
         callees = _callees_md(e, by_key)
         if callees:
             out.append("\n" + callees)
-        label = _SOURCE_LABEL.get(e.doc_source)
-        out.append(f"\n*来源: `{s.location()}`*" if not label
-                   else f"\n*来源: `{s.location()}` · {label}*")
+        out.append(f"\n*来源: `{s.location()}`*")
         out.append("\n---")
+
+    if pending:
+        out.append("\n## 待补全文档\n")
+        out.append(
+            "> 这些符号已从源码中抽取出签名，但本轮 LLM 预算尚未覆盖。"
+            "使用 `python -m cli doc <name> --api --complete` 可续跑补齐。\n"
+        )
+        out.append('??? note "待生成符号清单"')
+        out.append("")
+        out.append("    | 符号 | 类型 | 来源 | 签名 |")
+        out.append("    |---|---|---|---|")
+        for e in pending:
+            s = e.symbol
+            kind_label = {"class": "class", "method": "method", "function": "func"}.get(s.kind, s.kind)
+            sig = s.signature.replace("|", "\\|").replace("`", "")
+            out.append(f"    | `{s.qualified_name()}` | {kind_label} | `{s.location()}` | `{sig}` |")
+
     return "\n".join(out)
 
 
