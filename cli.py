@@ -37,6 +37,7 @@ def doc(
     port: int = typer.Option(8080, "--port", help="受管 server 端口"),
     model: str = typer.Option(None, "--model", help="受管 server 用的 GGUF 路径(默认走脚本默认)"),
     ctx: int = typer.Option(8192, "--ctx", help="上下文长度(越小 KV 越省,内存越安全)"),
+    use_lens: bool = typer.Option(False, "--use-lens", help="模块文档注入各模块 lens(需先 cli lens 生成)"),
 ) -> None:
     """生成文档站(MkDocs):架构总览(map-reduce)+ API 参考(抽取优先)。
 
@@ -60,7 +61,7 @@ def doc(
         server.start()
 
     try:
-        doc_result = generate(name, progress=lambda m: console.print(m))
+        doc_result = generate(name, progress=lambda m: console.print(m), use_lens=use_lens)
 
         api_pages = None
         if api:
@@ -118,6 +119,62 @@ def skill(
 
     res = SkillSession(name).run(skill_name, task, max_tokens=700)
     console.print(Panel(Markdown(res.text), title=f"Skill: {skill_name}", title_align="left"))
+
+
+def _print_lenses(lenses: dict) -> None:
+    if not lenses:
+        console.print("[yellow]还没有 lenses(先生成)。[/yellow]")
+        return
+    for mod, l in lenses.items():
+        tag = {"ai": "AI", "human": "人工", "fallback": "待补"}.get(l.source, l.source)
+        console.print(f"\n[bold cyan]{mod}[/bold cyan]  [dim]({tag})[/dim]")
+        console.print(f"  [bold]role[/bold]: {l.role}")
+        if l.focus:
+            console.print("  [bold]focus[/bold]:")
+            for f in l.focus:
+                console.print(f"    • {f}")
+        if l.sections:
+            console.print(f"  [bold]sections[/bold]: {' · '.join(l.sections)}")
+
+
+@app.command()
+def lens(
+    name: str = typer.Argument(..., help="仓库名(已 index)"),
+    show: bool = typer.Option(False, "--show", help="只展示已有 lenses,不生成"),
+    force: bool = typer.Option(False, "--force", help="重新生成(会覆盖人工修改)"),
+    max_llm: int = typer.Option(50, "--max-llm", help="本次生成上限"),
+    managed: bool = typer.Option(False, "--managed", help="自管 llama-server(内存安全)"),
+    model: str = typer.Option(None, "--model", help="受管 server 的 GGUF 路径"),
+    ctx: int = typer.Option(8192, "--ctx"),
+    port: int = typer.Option(8080, "--port"),
+) -> None:
+    """生成/查看模块分析视角(lens)→ 写入 lenses.json 供人工 review/编辑(不生成文档)。"""
+    from docgen.lens import generate_lenses, load_lenses, lenses_path
+
+    if show:
+        _print_lenses(load_lenses(name))
+        return
+
+    server = None
+    if managed:
+        import os
+        from inference.server import LlamaServer
+        env = {"CTX": str(ctx), "SLOTS": "1"}
+        if model:
+            env["MODEL"] = model
+        os.environ["LLAMA_BASE_URL"] = f"http://127.0.0.1:{port}/v1"
+        server = LlamaServer(port=port, env=env)
+        console.print(f"[dim]启动受管 llama-server(ctx={ctx}, slots=1)…[/dim]")
+        server.start()
+    try:
+        lenses = generate_lenses(name, max_llm=max_llm, force=force, progress=lambda m: console.print(m))
+        _print_lenses(lenses)
+        console.print(f"\n[green]可编辑[/green]: .cache/index/{name}/lenses.json  "
+                      f"(改完直接用于后续文档生成;重跑默认保留你的修改,除非 --force)")
+    finally:
+        if server is not None:
+            console.print("[dim]停止受管 server。[/dim]")
+            server.stop()
 
 
 if __name__ == "__main__":

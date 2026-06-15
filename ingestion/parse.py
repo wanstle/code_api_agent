@@ -135,6 +135,7 @@ def _extract_symbols(
                         docstring=_docstring(node, ref, language),
                         decorators=_decorators(node, ref),
                         calls=_calls(node, ref) if effective in ("function", "method") else [],
+                        raises=_raises(node, ref) if effective in ("function", "method") else [],
                     )
                 )
                 if kind == "class":
@@ -163,6 +164,12 @@ def _signature(node, ref: bytes) -> str:
         whole = _decode(ref, node.start_byte(), node.end_byte())
         sig = whole.splitlines()[0] if whole else ""
     sig = sig.strip()
+    # 去掉从 body 第一行泄漏进来的行注释(Python '#' / C 系 '//'),仅当注释出现在参数表 ')' 之后,
+    # 以免误伤默认值里的 '#'(如 color="#fff")
+    for cmt in ("#", "//"):
+        i = sig.find(cmt)
+        if i != -1 and ")" in sig[:i]:
+            sig = sig[:i].strip()
     while sig.endswith((":", "{", "=", "(")):
         sig = sig[:-1].strip()
     return sig
@@ -260,6 +267,44 @@ def _calls(node, ref: bytes) -> list[str]:
 
     walk(body)
     return names
+
+
+# raise/throw 语句节点(各语言)
+_RAISE_KINDS = {"raise_statement", "throw_statement", "throw_expression"}
+
+
+def _raises(node, ref: bytes) -> list[str]:
+    """确定性抽取:函数体里真正 raise/throw 的异常类型名。
+
+    只取真实抛出的异常类型(`raise ValueError(...)`→ValueError;`raise Err`→Err),
+    不碰被 except 捕获的、也不碰消息里的标识符。
+    """
+    body = node.child_by_field_name("body")
+    if body is None:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def walk(n) -> None:
+        if n.kind() in _RAISE_KINDS:
+            exc = n.named_child(0) if n.named_child_count() > 0 else None
+            name = None
+            if exc is not None:
+                if exc.kind() in ("call", "call_expression"):
+                    callee = (exc.child_by_field_name("function")
+                              or exc.child_by_field_name("name")
+                              or (exc.named_child(0) if exc.named_child_count() > 0 else None))
+                    name = _last_identifier(callee, ref) if callee is not None else None
+                else:
+                    name = _last_identifier(exc, ref)
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+        for i in range(n.child_count()):
+            walk(n.child(i))
+
+    walk(body)
+    return out
 
 
 def _last_identifier(node, ref: bytes) -> Optional[str]:

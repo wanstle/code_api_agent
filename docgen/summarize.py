@@ -145,9 +145,78 @@ def _module_context(
     return text
 
 
-def generate(index_name: str, progress=print) -> DocResult:
+def _build_facts(root: str) -> dict[str, list[dict]]:
+    """确定性:重解析仓库一次 → 文件 → [{qual, sig, raises}](签名+真实raise都来自抽取)。"""
+    from pathlib import Path
+    from ingestion.filetree import scan_files
+    from ingestion.parse import parse_repo
+    repo = parse_repo(Path(root), scan_files(Path(root)))
+    m: dict[str, list[dict]] = {}
+    for fi in repo.files:
+        for s in fi.symbols:
+            m.setdefault(fi.path, []).append(
+                {"qual": s.qualified_name(), "sig": s.signature, "raises": s.raises}
+            )
+    return m
+
+
+def _module_syms(files: list[dict], facts: dict[str, list[dict]]) -> list[dict]:
+    out = []
+    for f in sorted(files, key=lambda d: -d["symbols"])[:MAX_FILES_PER_MODULE]:
+        out.extend(facts.get(f["path"], []))
+    return out
+
+
+def _raises_fact_block(files: list[dict], facts: dict[str, list[dict]]) -> str:
+    """真实抛出的异常作为权威事实 + 约束。"""
+    lines = [f"- `{s['qual']}`: {', '.join(s['raises'])}"
+             for s in _module_syms(files, facts) if s["raises"]]
+    body = "\n".join(dict.fromkeys(lines)) if lines else "(本模块采样到的符号均无 raise/throw)"
+    return (
+        "\n\n## 确定性事实 · 真实抛出的异常(程序静态抽取,权威,优先于你的判断)\n"
+        f"{body}\n"
+        "**Raises 约束**:文档里的 **Raises/抛出异常** 只能来自上面这份清单;"
+        "未列出的符号一律**不要写 Raises**(被 `except` 捕获的不算抛出)。\n"
+    )
+
+
+def _lens_block(lens) -> str:
+    """把模块 lens 渲染成"专属视角"指引,追加到通用 prompt 之后(增强,不替换)。"""
+    focus = "\n".join(f"  - {x}" for x in lens.focus)
+    secs = " / ".join(lens.sections)
+    block = (
+        "\n\n## 本模块专属分析视角(在遵守上面通用规则的前提下,额外重点覆盖以下内容)\n"
+        f"- 角色定位:{lens.role}\n"
+    )
+    if focus:
+        block += f"- 重点讲清:\n{focus}\n"
+    if secs:
+        block += f"- 建议小节:{secs}\n"
+    # 保守约束:覆盖 base prompt 里"角色定位要笃定"的语气,避免以偏概全
+    block += (
+        "\n**保守约束(优先级高于上面通用规则中对『模块概述/角色定位』的语气要求)**:"
+        "你可能只看到本模块的部分文件。写「## 模块概述」时,用「涉及/包含……等」"
+        "客观描述**已观察到**的内容,**禁止**出现「本模块就是/主要用于/核心是 X」"
+        "这类对整个模块的断言;拿不准就用「等」带过或不写。\n"
+        "**精确约束**:文档化符号时,签名/参数/返回**照抄源码**,不臆造未出现的参数、返回或异常;"
+        "**Raises 只记真正用 `raise` 抛出的异常** —— 被 `except` 捕获处理的不算抛出;"
+        "拿不准的一律标 `(unknown)`,不要猜。\n"
+    )
+    return block
+
+
+def generate(index_name: str, progress=print, use_lens: bool = False, only=None,
+             skip_reduce: bool = False) -> DocResult:
     meta, top, detail, snippets = _load(index_name)
+    facts = _build_facts(meta["root"])   # 确定性:真实签名 + raise 事实表(重解析一次)
     modules = _group_modules(meta, top)
+    if only:
+        keep = set(only)
+        modules = [(m, f) for m, f in modules if m in keep]
+    lenses = {}
+    if use_lens:
+        from docgen.lens import load_lenses   # 惰性导入,避免与 lens.py 循环依赖
+        lenses = load_lenses(index_name)
     session = SkillSession(index_name)
     out = DocResult(name=index_name, meta=meta)
 
@@ -217,9 +286,16 @@ def generate(index_name: str, progress=print) -> DocResult:
             f"- NEVER invent Raises entries for methods that don't throw exceptions.\n"
             f"- If a method may raise multiple exceptions, put each on its own line."
         )
+        # 确定性事实注入:真实 raises(只能来自清单)。签名精度由 apidoc 的 Detailed API 页保证(逐字)。
+        task = task + _raises_fact_block(files, facts)
+        if use_lens and mod in lenses and lenses[mod].source in ("ai", "human"):
+            task = task + _lens_block(lenses[mod])   # A:只注入真实 lens(跳过低置信/兜底)
         res = session.run("architecture", task, max_tokens=1200, temperature=0.2)
         out.modules[mod] = res.text.strip()
         progress(f"  [map] 模块: {mod}  (cached_tokens={res.cached_tokens})")
+
+    if skip_reduce:
+        return out
 
     # --- reduce: synthesize Architecture overview ---
     digest_lines = []

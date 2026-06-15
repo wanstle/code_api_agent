@@ -1953,10 +1953,12 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         desc_lower = desc.lower()
         if any(kw in mod_lower for kw in ["cli", "app.py"]) or any(kw in desc_lower for kw in ["命令行", "入口", "cli"]):
             entry_modules.append(item)
-        elif any(kw in mod_lower for kw in ["common", "inference", "ingestion"]) or any(kw in desc_lower for kw in ["配置", "模型", "客户端", "推理", "解析", "基础设施"]):
-            infra_modules.append(item)
-        elif any(kw in mod_lower for kw in ["eval", "scripts", "test"]) or any(kw in desc_lower for kw in ["评估", "脚本", "测试"]):
+        # 辅助类(测试/示例/脚本)先扣除:test 模块描述里常出现"配置/设置"等词,
+        # 若先判基础设施会被误并入基础设施层,故必须排在 infra 之前。
+        elif any(kw in mod_lower for kw in ["eval", "scripts", "test", "example", "benchmark"]) or any(kw in desc_lower for kw in ["评估", "脚本", "测试", "示例", "基准"]):
             aux_modules.append(item)
+        elif any(kw in mod_lower for kw in ["common", "inference", "ingestion", "util", "config"]) or any(kw in desc_lower for kw in ["配置", "模型", "客户端", "推理", "解析", "工具", "基础设施", "通用"]):
+            infra_modules.append(item)
         else:
             core_modules.append(item)
 
@@ -1971,7 +1973,7 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         names = "、".join(f"[{l}](modules/{f}.md)" for l, f, _ in infra_modules)
         arch_lines.append(f"**{step}. 基础设施层** — {names}")
         arch_lines.append("")
-        arch_lines.append("这些模块提供项目的基础能力（配置、LLM 推理、仓库解析），被其他模块广泛依赖。先理解它们，后续模块更容易读懂。")
+        arch_lines.append("这些模块提供项目的基础能力与通用工具，被其他模块广泛依赖。先理解它们，后续模块更容易读懂。")
         arch_lines.append("")
         step += 1
 
@@ -1980,7 +1982,7 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         names = "、".join(f"[{l}](modules/{f}.md)" for l, f, _ in core_modules)
         arch_lines.append(f"**{step}. 核心业务层** — {names}")
         arch_lines.append("")
-        arch_lines.append("这些模块实现项目的核心功能（索引构建、技能系统、问答代理、文档生成），是项目的主体逻辑所在。")
+        arch_lines.append("这些模块实现项目的核心业务逻辑，是项目的主体所在。")
         arch_lines.append("")
         step += 1
 
@@ -2059,6 +2061,14 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
     # Force Chinese section headings (LLM stubbornness fallback)
     arch_md = _localize_headings(arch_md)
     (content_dir / "architecture.md").write_text(arch_md, "utf-8")
+
+    # --- index.md: 首页(根路由 /),重定向到架构总览,避免 mkdocs 在 / 上 404 ---
+    (content_dir / "index.md").write_text(
+        '<meta http-equiv="refresh" content="0; url=./architecture/">\n\n'
+        f"# {doc.name} — API 文档\n\n"
+        "正在进入[架构总览](architecture.md)…如果没有自动跳转，请点击该链接。\n",
+        "utf-8",
+    )
 
     # --- chat.md: embed the local Chainlit QA UI inside the generated docs site ---
     chat_md = f"""# LLM Chat

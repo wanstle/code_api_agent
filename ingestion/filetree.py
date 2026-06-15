@@ -25,8 +25,12 @@ EXT_LANG: dict[str, str] = {
     ".go": "go",
     ".rs": "rust",
     ".c": "c",
-    ".h": "c",
+    # .h 用 cpp 解析:C++ 项目惯用 .h 放头文件(类/模板/命名空间),
+    # 而 cpp 的 tree-sitter 语法同样能解析纯 C 头文件 → 用 cpp 更通用、更安全。
+    ".h": "cpp",
     ".cpp": "cpp",
+    ".cu": "cpp",
+    ".cuh": "cpp",
     ".cc": "cpp",
     ".cxx": "cpp",
     ".hpp": "cpp",

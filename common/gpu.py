@@ -21,32 +21,48 @@ class MemoryLowError(RuntimeError):
     """空闲内存低于安全阈值时抛出,用于提前优雅中止 + 触发重启释放。"""
 
 
-def mem_source() -> str:
-    if shutil.which("nvidia-smi") is not None:
-        return "nvidia"
-    if _amd_card_dir() is not None:
-        return "amd-gpu"
-    return "system"
+def _signals() -> dict[str, int]:
+    """采集所有可得的"空闲内存"信号(MiB):GPU 显存 + 系统内存。
 
-
-def free_mem_mib() -> Optional[int]:
-    """返回空闲内存(MiB);拿不到时 None(视为不检查)。"""
+    统一内存 APU 上 GPU(VRAM)与系统内存是两个不同预算(且 BIOS 划分可能很偏,
+    如 395-2:GPU 96G / 系统仅 30G)。两者都要盯,哪个紧就护哪个。
+    """
+    out: dict[str, int] = {}
     if shutil.which("nvidia-smi") is not None:
         v = _nvidia_free_mib()
         if v is not None:
-            return v
+            out["nvidia"] = v
     v = _amd_gpu_free_mib()
     if v is not None:
-        return v
-    return _meminfo_available()
+        out["amd-gpu"] = v
+    v = _meminfo_available()
+    if v is not None:
+        out["system"] = v
+    return out
+
+
+def mem_source() -> str:
+    """返回当前最紧(空闲最少)的内存来源标签。"""
+    sig = _signals()
+    return min(sig, key=sig.get) if sig else "none"
+
+
+def free_mem_mib() -> Optional[int]:
+    """返回各内存池里**最紧**的空闲值(MiB);拿不到时 None(视为不检查)。"""
+    sig = _signals()
+    return min(sig.values()) if sig else None
 
 
 def check_memory(min_free_mib: int = 2000) -> None:
-    """空闲内存低于阈值则抛 MemoryLowError;无法检测时直接放行。"""
-    free = free_mem_mib()
-    if free is not None and free < min_free_mib:
+    """任一内存池(GPU/系统)空闲低于阈值即抛 MemoryLowError;无法检测则放行。"""
+    sig = _signals()
+    if not sig:
+        return
+    src = min(sig, key=sig.get)
+    free = sig[src]
+    if free < min_free_mib:
         raise MemoryLowError(
-            f"空闲内存仅 {free} MiB(< {min_free_mib},来源={mem_source()}),为防 OOM 提前中止"
+            f"空闲内存仅 {free} MiB(< {min_free_mib},最紧来源={src}),为防 OOM 提前中止"
         )
 
 

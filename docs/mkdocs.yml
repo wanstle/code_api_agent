@@ -1,0 +1,114 @@
+site_name: scrapy API Reference
+site_description: Auto-generated code API reference
+repo_url: https://github.com/user/scrapy
+edit_uri: ''
+
+theme:
+  name: material
+  custom_dir: ''
+  language: en
+  features:
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.path
+    - toc.integrate
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Roboto
+    code: Roboto Mono
+  icon:
+    logo: material/home
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  homepage: architecture.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - footnotes
+  - toc:
+      permalink: true
+      toc_depth: 3
+
+plugins:
+  - search:
+      separator: '[\s\-\_\.\/]+'
+
+docs_dir: docs
+nav:
+  - Architecture: architecture.md
+  - LLM Chat: chat.md
+  - API Quick Ref: api-index.md
+  - Modules:
+          - scrapy: modules/scrapy.md
+          - tests: modules/tests.md
+          - scrapy:
+            - scrapy/commands: modules/scrapy_commands.md
+            - scrapy/core: modules/scrapy_core.md
+            - scrapy/downloadermiddlewares: modules/scrapy_downloadermiddlewares.md
+            - scrapy/extensions: modules/scrapy_extensions.md
+            - scrapy/http: modules/scrapy_http.md
+            - scrapy/pipelines: modules/scrapy_pipelines.md
+            - scrapy/utils: modules/scrapy_utils.md
+          - tests:
+            - tests/AsyncCrawlerProcess: modules/tests_AsyncCrawlerProcess.md
+            - tests/mockserver: modules/tests_mockserver.md
+            - tests/test_settings: modules/tests_test_settings.md
+  - Detailed API:
+      - conftest: api/conftest.py.md
+      - docs: api/docs.md
+      - docs/_ext: api/docs__ext.md
+      - docs/utils: api/docs_utils.md
+      - extras: api/extras.md
+      - scrapy: api/scrapy.md
+      - scrapy/commands: api/scrapy_commands.md
+      - scrapy/contracts: api/scrapy_contracts.md
+      - scrapy/core: api/scrapy_core.md
+      - scrapy/downloadermiddlewares: api/scrapy_downloadermiddlewares.md
+      - scrapy/extensions: api/scrapy_extensions.md
+      - scrapy/http: api/scrapy_http.md
+      - scrapy/linkextractors: api/scrapy_linkextractors.md
+      - scrapy/loader: api/scrapy_loader.md
+      - scrapy/pipelines: api/scrapy_pipelines.md
+      - scrapy/selector: api/scrapy_selector.md
+      - scrapy/settings: api/scrapy_settings.md
+      - scrapy/spidermiddlewares: api/scrapy_spidermiddlewares.md
+      - scrapy/spiders: api/scrapy_spiders.md
+      - scrapy/utils: api/scrapy_utils.md

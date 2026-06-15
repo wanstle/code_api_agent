@@ -25,6 +25,7 @@ class SymbolInfo:
     docstring: Optional[str] = None              # 已有 docstring / JSDoc(逐字,作者权威文档)
     decorators: list[str] = field(default_factory=list)  # 装饰器(如 @property)
     calls: list[str] = field(default_factory=list)       # 函数体里调用到的名字(原始,未解析)
+    raises: list[str] = field(default_factory=list)      # 函数体里真正 raise/throw 的异常类型(确定性抽取)
 
     @property
     def is_private(self) -> bool:

@@ -1,0 +1,4 @@
+# 国内镜像加速:默认走清华 TUNA,解决从 pypi.org 国际下载过慢
+[[index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
