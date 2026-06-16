@@ -1,0 +1,240 @@
+\documentclass[10pt,twocolumn]{article}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage[a4paper,margin=0.7in]{geometry}
+
+\newenvironment{IEEEkeywords}
+{\par\vspace{0.5em}\noindent\textbf{Index Terms---}}
+{\par\vspace{0.8em}}
+
+\definecolor{codebg}{rgb}{0.95,0.95,0.95}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  numbers=none,
+  backgroundcolor=\color{codebg},
+  showstringspaces=false,
+}
+
+\title{RepoLens: A Local-First Code Analysis and Documentation\\Generation System for Large Repositories}
+
+\author{
+Member 1: Yuhang Zhao \quad Student ID: 2025234377 \\
+Member 2: Xuebing Li \quad Student ID: 2025233168 \\
+Member 3: Jinxi Xiao \quad Student ID: 2025233210 
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Understanding a large and unfamiliar code repository is a recurring challenge in software engineering. Manual documentation is often missing, outdated, or inconsistent with the actual source. While large language models (LLMs) can summarize code, they may hallucinate function signatures, parameter types, and exception specifications that do not exist in the source. This report presents RepoLens, a local-first system that combines tree-sitter-based static analysis with local LLM inference to produce traceable, verifiable API documentation and to support retrieval-augmented question answering. The system ingests a GitHub repository, builds hybrid vector-and-symbol indexes, generates a hierarchical MkDocs documentation site, and provides an interactive QA agent equipped with sandboxed file-inspection tools. All inference runs against a local llama.cpp server using a quantized GGUF coding model, eliminating cloud API dependencies. The project demonstrates that grounding LLM output in deterministically extracted source facts significantly reduces hallucination risk while preserving readable, informative documentation.
+\end{abstract}
+
+%-----------------------------------------------------------------------
+\section{Introduction}
+%-----------------------------------------------------------------------
+
+Modern software repositories can span thousands of files, hundreds of modules, and millions of lines of code. When a developer joins a new project, contributes to an unfamiliar open-source library, or audits a legacy codebase, the time spent navigating source code to build a mental model of the architecture is often the dominant cost. Well-maintained API documentation can dramatically reduce this overhead, but in practice documentation frequently lags behind code changes, covers only a subset of the public API, or is missing entirely.
+
+Large language models offer a promising avenue for automated documentation generation. Given source code as input, an LLM can produce natural-language explanations of module responsibilities, function behavior, and architectural patterns. However, using an LLM as a black-box documentation generator carries significant risks. Models may invent parameter names, return types, or raised exceptions that are plausible yet factually incorrect---the hallucination problem. In safety-critical or production settings, such fabricated details can mislead developers and erode trust in generated documentation.
+
+RepoLens addresses this problem through a design principle of \textbf{deterministic extraction, semantic explanation}. Source-code facts---symbol names, function signatures, line ranges, call relationships, and actual \texttt{raise} statements---are extracted by tree-sitter-based static analysis and treated as authoritative. The LLM is then tasked with writing human-readable descriptions, module-level narratives, and architectural summaries, working strictly within the constraints provided by the extracted facts. This separation of concerns mirrors the Unix philosophy: each component has a focused responsibility, and the full pipeline is composed through a simple command-line interface.
+
+The system runs entirely on local hardware using a quantized GGUF model served by llama.cpp with Vulkan backend acceleration. This design eliminates reliance on cloud API services, which can introduce latency, cost, privacy concerns, and network-dependency issues. The project has been tested on moderate-to-large Python repositories and includes initial experiments with C++ codebases.
+
+%-----------------------------------------------------------------------
+\section{System Overview and Design Goals}
+%-----------------------------------------------------------------------
+
+RepoLens was designed with the following concrete goals:
+
+\begin{enumerate}[nosep,leftmargin=*]
+  \item \textbf{Automated ingestion}: Accept a GitHub URL or local directory, clone or locate the repository, and produce a structured representation of all source files and their symbols.
+  \item \textbf{Dual indexing}: Build both a semantic vector index (for natural-language queries) and a precise symbol index (for exact name lookups), stored persistently for reuse across sessions.
+  \item \textbf{Multi-level documentation}: Generate three tiers of documentation---Architecture overview, Module guides, and Detailed API references---rendered as a browsable MkDocs Material site.
+  \item \textbf{Interactive QA}: Provide a retrieval-augmented agent that can inspect source files through sandboxed tools and answer questions with \texttt{file:line} citations.
+  \item \textbf{Local-first inference}: Use a local llama.cpp server with a quantized model, supporting both managed (auto lifecycle) and external-server modes.
+  \item \textbf{Resumable generation}: Support incremental caching and safe-restart patterns so long-running documentation jobs can survive memory pressure and process interruptions.
+\end{enumerate}
+
+%-----------------------------------------------------------------------
+\section{Architecture and Implementation}
+%-----------------------------------------------------------------------
+
+The high-level pipeline proceeds as follows:
+
+\begin{lstlisting}
+GitHub / local repository
+  -> ingestion (clone, scan, parse)
+  -> indexing (chunk, embed, store)
+  -> docgen (lens, summarize, render)
+  -> MkDocs documentation site
+  -> QA agent / Chainlit web UI
+\end{lstlisting}
+
+The unified command-line entry point is implemented in \texttt{cli.py} using the Typer framework. The five principal commands are \texttt{index}, \texttt{lens}, \texttt{doc}, \texttt{ask}, and \texttt{skill}. The following subsections describe each stage of the pipeline in detail.
+
+%-----------------------------------------------------------------------
+\subsection{Repository Ingestion and Static Analysis}
+%-----------------------------------------------------------------------
+
+The \texttt{ingestion} package handles the initial processing of a target repository. The module \texttt{ingestion.clone} accepts either a GitHub URL or a local directory path and resolves it to a local repository root, using shallow cloning (depth=1) for remote sources to minimize disk usage. The module \texttt{ingestion.filetree} walks the repository tree and identifies source files by extension, filtering out common non-code directories (e.g., \texttt{.git}, \texttt{node\_modules}) and binary files.
+
+The core parsing logic resides in \texttt{ingestion.parse}. It uses the \texttt{tree-sitter-language-pack} to support multiple programming languages through a unified API. For each source file, the appropriate tree-sitter language grammar is loaded and the AST is traversed with a recursive visitor. The system extracts the following deterministic facts for each symbol:
+
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Name and kind}: The symbol's declared name and its category (function, class, method, etc.).
+  \item \textbf{Signature}: The exact source text from the declaration start to the body start, captured verbatim.
+  \item \textbf{Source location}: File path, start line, and end line.
+  \item \textbf{Docstring}: Any associated documentation comment, when available.
+  \item \textbf{Calls}: Function names referenced within the symbol's body, used for call-graph construction.
+  \item \textbf{Raised exceptions}: Explicit \texttt{raise} or \texttt{throw} statements found within the body.
+\end{itemize}
+
+A notable design choice is that the implementation avoids tree-sitter \texttt{.scm} query files in favor of a straightforward per-language mapping from AST node types to symbol kinds, combined with a generic recursive visitor. This keeps the parsing layer simple and easy to extend to new languages. Single-file parse errors are silently skipped (graceful degradation), and the output is a \texttt{RepoMap} dataclass containing a flat list of \texttt{FileInfo} objects, each holding its own list of \texttt{SymbolInfo} records.
+
+%-----------------------------------------------------------------------
+\subsection{Index Construction}
+%-----------------------------------------------------------------------
+
+The \texttt{indexing} package transforms the parsed \texttt{RepoMap} into two complementary search indexes, orchestrated by \texttt{indexing.builder.build\_index}. All index data is persisted under \texttt{.cache/index/<repo\_name>/}.
+
+\subsubsection{Code-Aware Chunking}
+The module \texttt{indexing.chunk} divides source files into semantic chunks suitable for embedding. The chunking strategy is code-aware rather than line-count-based: top-level functions become individual chunks; classes are split into a header chunk plus independent method chunks (avoiding excessively large class blobs); and module-level code between symbols is chunked with a sliding window of 80 lines, capped at 200 lines per chunk. Each chunk's text is decorated with a structured header containing language, kind, qualified name, and signature metadata to improve embedding quality.
+
+\subsubsection{Vector and Symbol Indexes}
+Chunks are embedded using \texttt{fastembed} with the BAAI/bge-small-en-v1.5 model running on CPU (reserving the GPU for LLM inference). The resulting 384-dimensional vectors are stored in a persistent ChromaDB collection with cosine distance. In parallel, all extracted symbols are inserted into a SQLite database (\texttt{symbols.db}) with columns for name, qualified name, kind, file path, module, signature, and docstring, enabling exact and prefix-based symbol lookup.
+
+\subsubsection{Hybrid Retrieval}
+The \texttt{indexing.retrieve.Retriever} class combines vector and symbol search results through rule-based re-ranking. Symbol hits receive a 0.20 relevance bonus; function, method, and class kinds receive 0.08; test files incur a 0.35 penalty. Query expansion adds CamelCase-split tokens and domain-specific synonyms (e.g., ``parse argument'' expands to ``parse\_args'', ``OptionParser''). The combined approach significantly improves retrieval precision compared to vector-only or symbol-only baselines.
+
+%-----------------------------------------------------------------------
+\subsection{Documentation Generation}
+%-----------------------------------------------------------------------
+
+The \texttt{docgen} package produces a three-tier documentation hierarchy, rendered as an MkDocs Material site under \texttt{docs/<repo\_name>/}.
+
+\subsubsection{Module Lens}
+Before full documentation generation, \texttt{docgen.lens} generates a lightweight analysis perspective for each top-level module. A lens is a JSON object specifying the module's role, key focus points, and suggested documentation sections. Lenses are written to \texttt{lenses.json} for optional human review and editing, and marked with a source tag (\texttt{ai}, \texttt{human}, or \texttt{fallback}). During documentation generation, only AI- and human-sourced lenses are injected into the per-module prompts. This mechanism reduces hallucinated module boundaries and improves coverage in complex repositories.
+
+\subsubsection{Map-Reduce Summarization}
+Module-level and architecture-level documentation is generated through a map-reduce strategy in \texttt{docgen.summarize}. In the map phase, each module is processed independently with a prompt that includes real source snippets, symbol lists, and (optionally) the module's lens. The reduce phase concatenates all module summaries and prompts the LLM to synthesize a repository-level Architecture overview covering project structure, data flow, call chains, a module index table, and dependency relationships.
+
+\subsubsection{Detailed API Documentation}
+The \texttt{docgen.apidoc} module generates per-symbol API entries. Each symbol receives an LLM-generated description of its parameters, return values, exceptions, and behavior. Crucially, the function signature is \emph{never} generated by the LLM---it is rendered directly from the statically extracted source text. Similarly, the list of raised exceptions is constrained to those actually found in the symbol's body during parsing. This design eliminates the two most common sources of hallucination in code documentation tools.
+
+API generation is batched with incremental persistence every 15 symbols, and each symbol's result is cached by an MD5 fingerprint of its kind and signature. Re-running the documentation command regenerates entries only for symbols whose signatures have changed. The system also supports a ``safe loop'' pattern: when memory approaches a configurable threshold, current progress is saved to disk, the llama-server process is terminated to release GPU memory, the server is restarted, and generation resumes from where it left off.
+
+\subsubsection{MkDocs Rendering}
+The \texttt{docgen.render} module assembles all generated content into a complete MkDocs Material site, producing architecture, module, and API pages, plus read-only source pages used as link targets for API ``source'' references. The rendering layer includes extensive Markdown post-processing to improve output stability: table alignment normalization, duplicate separator removal, heading localization (mapping common English headings to Chinese when the LLM ignores the prompt's language instruction), and detection of truncated type expressions. The site configuration supports hierarchical navigation with collapsible subfolder groups via the \texttt{--nav-subfolders} option.
+
+%-----------------------------------------------------------------------
+\subsection{Local Inference Service}
+%-----------------------------------------------------------------------
+
+The \texttt{inference} package provides a clean abstraction over the local LLM backend. The \texttt{LlamaClient} class wraps the OpenAI Python SDK, making the local llama-server appear as a standard OpenAI-compatible endpoint. Every API call passes \texttt{cache\_prompt=True}, which instructs llama.cpp to reuse KV-cache entries for the system prompt across calls---a critical optimization that significantly reduces prefill latency during batch generation.
+
+The \texttt{LlamaServer} class manages the lifecycle of the llama.cpp process, supporting start, stop, restart, and health-check operations, and implements the context-manager protocol. The restart capability is essential for the managed documentation mode.
+
+The reference deployment uses the Qwen3-Coder-30B-A3B-Instruct model in Q4\_K\_M quantization, served via llama.cpp's Vulkan backend on AMD Ryzen AI Max+ 395 / Radeon 8060S hardware with 131,072 tokens of context window. The system is backend-agnostic, however, and can work with any OpenAI-compatible inference server.
+
+%-----------------------------------------------------------------------
+\subsection{Question Answering Agent}
+%-----------------------------------------------------------------------
+
+The QA system in \texttt{qa.agent.QAAgent} implements a tool-calling loop. On each turn, the agent receives the conversation history plus a stable repository overview prefix (kept byte-identical across calls to leverage KV-cache reuse) and outputs a structured JSON action. The available tools are:
+
+\begin{itemize}[nosep,leftmargin=*]
+  \item \texttt{search\_code(query, k)}: Hybrid retrieval over the indexed codebase.
+  \item \texttt{find\_symbol(name)}: Exact symbol lookup in the SQLite index.
+  \item \texttt{read\_file(path, start, end)}: Read source file lines within a range.
+  \item \texttt{grep(pattern)}: Regex search over repository files.
+  \item \texttt{list\_dir(path)}: Browse the repository file tree.
+  \item \texttt{final(answer)}: Submit the final answer with mandatory \texttt{file:line} citations.
+\end{itemize}
+
+All file-access tools are enforced by \texttt{qa.tools.RepoTools}, which resolves paths against the repository root and blocks traversal outside it. Read operations are capped (90 lines per read, 20 grep results, 120 directory entries) to keep context manageable. The agent is limited to 6 tool-calling iterations per question, with deduplication of repeated tool calls.
+
+A key quality feature is the answer verification step: the \texttt{final} action is only accepted if the answer includes at least one \texttt{file:line} reference, ensuring that every answer is traceable back to the source code. For follow-up questions, the agent maintains memory of previous answers, extracted code items, and referenced files, enabling multi-turn conversations that build on prior context. The web interface is provided by a Chainlit application in \texttt{app.py}, which displays the tool-call trajectory alongside the final answer and can be embedded directly into the generated MkDocs site.
+
+%-----------------------------------------------------------------------
+\section{Related Work}
+%-----------------------------------------------------------------------
+
+Several categories of tools address similar problems. Traditional documentation generators such as Doxygen and Sphinx rely on code comments and annotations, producing reference-style output with minimal narrative content. AI-assisted tools like GitHub Copilot Chat and Sourcegraph Cody can answer code questions but require cloud connectivity and do not generate persistent documentation sites. Academic systems such as RepoFusion and RepoGraph have explored repository-level code understanding with LLMs, but typically focus on code generation tasks rather than documentation. RepoLens differs in three main ways: (1) it generates a complete, browsable documentation site rather than providing only ephemeral chat responses; (2) it enforces strict separation between deterministically extracted facts and LLM-generated descriptions; and (3) it is designed to run entirely on local hardware with no external service dependencies.
+
+%-----------------------------------------------------------------------
+\section{Evaluation and Observations}
+%-----------------------------------------------------------------------
+
+The system has been tested on several repositories of varying size and complexity. The key observations are summarized below.
+
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Small Python projects (e.g., Click)}: The base summarization prompt produces useful documentation on its own. The lens mechanism provides only marginal improvement, as the module structure is simple and well-defined.
+  \item \textbf{Complex Python projects (e.g., Scrapy)}: The lens mechanism meaningfully improves module distinction, increases coverage of secondary modules, and reduces hallucinated content by providing the LLM with explicit per-module guidance. The map-reduce strategy handles the large symbol count effectively.
+  \item \textbf{Large C++ projects (e.g., Ceres Solver)}: C++ extraction remains the primary bottleneck. Templates, traits, macros, and complex type systems produce noisy symbol data that degrades both indexing quality and documentation accuracy. Prompt engineering alone cannot compensate for extraction noise.
+\end{itemize}
+
+The system's memory monitoring module in \texttt{common.gpu} has proven essential for the AMD APU deployment, where video memory and system memory are separate pools. On this hardware, system memory is often the tighter constraint, and the watchdog correctly identifies and responds to both memory sources through a unified interface that queries NVIDIA SMI, AMD sysfs VRAM/GTT, and \texttt{/proc/meminfo} simultaneously.
+
+%-----------------------------------------------------------------------
+\section{Limitations and Future Work}
+%-----------------------------------------------------------------------
+
+Despite its strengths, RepoLens has several limitations that suggest directions for future improvement:
+
+\begin{enumerate}[nosep,leftmargin=*]
+  \item \textbf{C++ parsing quality}: Templates, macros, and complex inheritance hierarchies are not handled well by the current tree-sitter visitor. A dedicated C++ extraction pipeline with macro expansion and template resolution is needed for production-quality results.
+  \item \textbf{Scalability}: Repositories with tens of thousands of symbols require many hours of LLM inference for full API coverage. More aggressive sampling, incremental update strategies, or tiered coverage (e.g., documenting only public APIs) could reduce this cost.
+  \item \textbf{Evaluation methodology}: The current evaluation is qualitative and based on manual inspection. Developing automated metrics for documentation quality---such as factuality against source code, completeness of API coverage, and readability---would enable systematic comparison and regression testing.
+  \item \textbf{Multi-language optimization}: While the parsing layer supports multiple languages through tree-sitter, the chunking and prompting strategies have been optimized primarily for Python. Adapting these to other language ecosystems (Rust's module system, Java's package conventions) would broaden applicability.
+  \item \textbf{Incremental updates}: Currently, any source code change requires re-running the full pipeline. Supporting incremental index updates and targeted documentation regeneration would make the system more practical for actively developed repositories.
+\end{enumerate}
+
+%-----------------------------------------------------------------------
+\section{Conclusion}
+%-----------------------------------------------------------------------
+
+This report presented RepoLens, a local-first system for repository analysis, API documentation generation, and code question answering. The project demonstrates a practical approach to mitigating LLM hallucination in code documentation by combining deterministic static analysis with constrained natural-language generation. The system ingests repositories through tree-sitter parsing, builds hybrid indexes for efficient retrieval, generates three-tier MkDocs documentation, and provides an interactive QA agent with sandboxed source inspection tools, all running on a local llama.cpp server.
+
+The key technical contributions include: (1) code-aware chunking that preserves semantic boundaries; (2) hybrid vector-and-symbol retrieval with rule-based re-ranking; (3) a lens mechanism for customizable per-module documentation prompts with human-in-the-loop editing; (4) a safe-loop pattern for resumable long-running generation under memory constraints; and (5) strict separation between deterministically extracted source facts and LLM-generated descriptions. The system has been successfully deployed on AMD APU hardware with a quantized 30B-parameter coding model, demonstrating that practical-quality code documentation can be generated entirely on local consumer hardware.
+
+%-----------------------------------------------------------------------
+\begin{thebibliography}{00}
+
+\bibitem{tree-sitter}
+Tree-sitter, ``An incremental parsing system for programming tools,'' [Online]. Available: \url{https://tree-sitter.github.io/tree-sitter/}
+
+\bibitem{chromadb}
+Chroma, ``The AI-native open-source embedding database,'' [Online]. Available: \url{https://www.trychroma.com/}
+
+\bibitem{mkdocs}
+MkDocs, ``Project documentation with Markdown,'' [Online]. Available: \url{https://www.mkdocs.org/}
+
+\bibitem{llamacpp}
+llama.cpp, ``LLM inference in C/C++,'' [Online]. Available: \url{https://github.com/ggml-org/llama.cpp}
+
+\bibitem{chainlit}
+Chainlit, ``Build conversational AI applications,'' [Online]. Available: \url{https://docs.chainlit.io/}
+
+\bibitem{fastembed}
+Qdrant, ``FastEmbed: Fast, lightweight embedding generation for Python,'' [Online]. Available: \url{https://github.com/qdrant/fastembed}
+
+\bibitem{repofusion}
+D. Shrivastava et al., ``RepoFusion: Training Code Models to Understand Your Repository,'' arXiv:2306.10957, 2024.
+
+\bibitem{repograph}
+S. Ouyang et al., ``RepoGraph: Enhancing AI Software Engineering with Repository-level Code Graph,'' arXiv:2410.14684, 2024.
+
+\end{thebibliography}
+
+\end{document}
