@@ -67,8 +67,28 @@ def _callees_md(entry: APIEntry, by_key: dict[str, APIEntry]) -> str:
     return "**内部调用(库内):**\n" + "\n".join(rows)
 
 
+def _symbol_level(kind: str) -> str:
+    # Keep symbols below toc_depth=2 so large method lists do not flood sidebars.
+    return "####"
+
+
+def _normalize_body_md(md: str) -> str:
+    if not md:
+        return ""
+    text = md.strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"^(\*\*(?:Parameters|Returns|Raises)\*\*)\s{2,}$", r"\1", text, flags=re.M)
+    return text
+
+
 def render_module_md(module: str, entries: list[APIEntry], by_key: dict[str, APIEntry]) -> str:
-    out = [f"# API 参考:`{module}`", ""]
+    out = [
+        f"# API 参考: `{module}`",
+        "",
+        "!!! note \"阅读提示\"",
+        "    本页是 Detailed API：保留签名、参数、返回值、内部调用和源码定位。左侧导航只列模块页面；页面内文件目录保留到文件级，避免方法列表挤满导航。",
+        "",
+    ]
     pending: list[APIEntry] = []
     current_file = None
     for e in entries:
@@ -82,17 +102,24 @@ def render_module_md(module: str, entries: list[APIEntry], by_key: dict[str, API
             current_file = s.file
 
         kind_label = {"class": "class", "method": "method", "function": "func"}.get(s.kind, s.kind)
+        heading = _symbol_level(s.kind)
         out.append(f'<a id="{_anchor(s)}"></a>')
-        out.append(f"### `{s.qualified_name()}` · {kind_label}")
+        out.append(f'{heading} `{s.qualified_name()}` <span class="api-kind">{kind_label}</span>')
+        out.append(
+            f'<div class="api-symbol-meta" markdown="1">'
+            f'**Source**: [`{s.location()}`]({_source_link(s)})'
+            f' &nbsp;|&nbsp; **Kind**: `{kind_label}`'
+            f'</div>'
+        )
         if s.decorators:
             out.append("装饰器: " + " ".join(f"`{d}`" for d in s.decorators))
         out.append(f"```{_lang(s.file)}\n{s.signature}\n```")
-        if e.body_md:
-            out.append("\n" + e.body_md)
+        body = _normalize_body_md(e.body_md)
+        if body:
+            out.append("\n" + body)
         callees = _callees_md(e, by_key)
         if callees:
             out.append("\n" + callees)
-        out.append(f"\n*来源: [`{s.location()}`]({_source_link(s)})*")
         out.append("\n---")
 
     if pending:

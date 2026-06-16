@@ -537,6 +537,199 @@ def _localize_headings(text: str) -> str:
 # Section reorganization — enforce consistent heading hierarchy
 # ---------------------------------------------------------------------------
 
+
+def _plain_inline(text: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", text or "")
+    text = text.replace("**", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _strip_markdown_code(text: str) -> str:
+    return re.sub(r"`([^`]+)`", r"\1", text or "")
+
+
+def _split_overview_sentences(lines: list[str]) -> list[str]:
+    blob = "\n".join(lines)
+    blob = re.sub(r"<div[^>]*>|</div>", "\n", blob)
+    blob = re.sub(r"^>\s*", "", blob, flags=re.M)
+    blob = re.sub(r"\*\*(角色定位|职责边界|协作关系)\*\*\s*[：:]", r"\n\1：", blob)
+    raw_parts = re.split(r"(?<=[。！？])\s+|\n+", blob)
+    parts: list[str] = []
+    for part in raw_parts:
+        item = _plain_inline(part)
+        if not item:
+            continue
+        if re.match(r"^(Package|Source|Module)\s*[:：]", item, re.I):
+            continue
+        if len(item) < 8:
+            continue
+        parts.append(item)
+    return parts
+
+
+def _overview_bullets(lines: list[str]) -> list[str]:
+    parts = _split_overview_sentences(lines)
+    role = next((p for p in parts if "角色定位" in p), "")
+    boundary = next((p for p in parts if "职责边界" in p), "")
+    collaboration = next((p for p in parts if "协作关系" in p or "依赖" in p or "被" in p), "")
+    if not role and len(parts) == 1:
+        role = parts[0]
+
+    used: set[str] = set()
+    bullets: list[tuple[str, str]] = []
+    for label, val in (("角色定位", role), ("职责边界", boundary), ("协作关系", collaboration)):
+        if val:
+            val = re.sub(rf"^\s*{label}\s*[：:]\s*", "", val)
+            bullets.append((label, val))
+            used.add(val)
+
+    for part in parts:
+        if len(bullets) >= 3:
+            break
+        if part in used:
+            continue
+        label = ("角色定位" if not bullets else "职责边界" if len(bullets) == 1 else "协作关系")
+        bullets.append((label, part))
+        used.add(part)
+
+    if not bullets:
+        return [f"- **角色定位**：本模块 `{_strip_markdown_code('')}` 提供该目录下的代码组织入口。"]
+    return [f"- **{label}**：{text}" for label, text in bullets[:3]]
+
+
+def _extract_symbol_cards(lines: list[str], limit: int = 12) -> list[dict[str, str]]:
+    cards: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    in_code = False
+
+    def flush() -> None:
+        nonlocal current
+        if current and current.get("name"):
+            cards.append(current)
+        current = None
+
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        m = re.match(r"^###\s+`?([^`\n]+?)`?\s*$", line)
+        if m:
+            flush()
+            current = {"name": _strip_markdown_code(m.group(1)).strip(), "kind": "", "summary": "", "source": ""}
+            continue
+        if current is None:
+            continue
+        summary = re.match(r"^>\s*\*\*(?:Summary|概述)\*\*\s*[：:]\s*(.+)$", line, re.I)
+        if summary:
+            current["summary"] = _plain_inline(summary.group(1))
+            continue
+        source = re.match(r"^\*\*Source\*\*\s*[：:]\s*(.+)$", line, re.I)
+        if source:
+            current["source"] = _plain_inline(source.group(1))
+            continue
+        type_m = re.search(r"\*\*(?:Type|类型)\*\*\s*[：:]\s*`?([^`|]+)`?", line, re.I)
+        if type_m:
+            current["kind"] = _plain_inline(type_m.group(1))
+        module_m = re.search(r"\*\*(?:Module|模块)\*\*\s*[：:]\s*`?([^`|]+)`?", line, re.I)
+        if module_m and not current.get("source"):
+            current["source"] = _plain_inline(module_m.group(1))
+        if not current.get("source"):
+            ref = re.search(r"([\w./-]+\.py(?::\d+)?)", line)
+            if ref:
+                current["source"] = ref.group(1)
+    flush()
+
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for card in cards:
+        key = (card.get("name", ""), card.get("source", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(card)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _render_symbol_index(cards: list[dict[str, str]], module_path: str) -> list[str]:
+    if not cards:
+        return ["_未提取到稳定的入口符号；详细符号请查看 Detailed API。_"]
+    rows = [
+        '<div class="api-table-container api-module-symbols" markdown="0">',
+        '<table>',
+        '<thead><tr><th>入口</th><th>类型</th><th>职责</th><th>位置</th></tr></thead>',
+        '<tbody>',
+    ]
+    for card in cards:
+        name = card.get("name", "")
+        kind = card.get("kind", "") or ("class" if name[:1].isupper() else "function")
+        summary = card.get("summary", "") or "该入口的详细行为见 Detailed API。"
+        source = card.get("source", "") or module_path
+        rows.append(
+            "<tr>"
+            f"<td><code>{name}</code></td>"
+            f"<td>{kind}</td>"
+            f"<td>{summary}</td>"
+            f"<td><code>{source}</code></td>"
+            "</tr>"
+        )
+    rows.extend(['</tbody>', '</table>', '</div>'])
+    return rows
+
+
+def _render_module_guide(text: str, module_path: str) -> str:
+    """Render module pages as high-level guides, leaving details to api/ pages."""
+    lines = text.splitlines()
+    overview: list[str] = []
+    symbol_lines: list[str] = []
+    meta_lines: list[str] = []
+    current = "overview"
+
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        meta_m = re.match(r"^(?:>\s*)?\*\*Package\*\*:\s*(.+?)\s*\|\s*\*\*Source\*\*:\s*(.+)$", stripped)
+        if meta_m:
+            meta_lines.append(
+                f'<div class="api-module-meta"><strong>Package</strong>: {meta_m.group(1).strip()}'
+                f' &nbsp;|&nbsp; <strong>Source</strong>: {meta_m.group(2).strip()}</div>'
+            )
+            continue
+        if re.match(r"^##\s+(关键入口|快速概览|类参考|函数参考|Class Reference|Function Reference|Quick Summary)", stripped, re.I):
+            current = "symbols"
+            continue
+        if re.match(r"^##\s+(模块概述|Module Overview)", stripped, re.I):
+            current = "overview"
+            continue
+        if current == "overview":
+            overview.append(raw)
+        else:
+            symbol_lines.append(raw)
+
+    cards = _extract_symbol_cards(symbol_lines, limit=14)
+    result: list[str] = ["## 模块导览", ""]
+    result.extend(meta_lines)
+    if meta_lines:
+        result.append("")
+    result.append('<div class="api-module-overview" markdown="1">')
+    result.extend(_overview_bullets(overview))
+    result.append('</div>')
+    result.append("")
+    result.append("## 关键入口")
+    result.append("")
+    result.extend(_render_symbol_index(cards, module_path))
+    result.append("")
+    result.append("!!! note \"详细 API\"")
+    result.append("    本页只保留模块职责与入口索引；参数、返回值、构造方法和方法表请查看左侧 Detailed API。")
+    return "\n".join(result)
+
+
 def _reorganize_sections(text: str, module_path: str) -> str:
     """Reorganize LLM output into a clean, consistent structure.
 
@@ -978,6 +1171,59 @@ EXTRA_CSS = """\
 
 [data-md-color-scheme="slate"] .api-module-meta strong {
   color: #bdc1c6;
+}
+
+/* --- Detailed API symbols --- */
+.api-kind {
+  display: inline-block;
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--md-default-fg-color--light);
+  background: var(--api-table-stripe);
+  border: 1px solid var(--api-border-color);
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+  vertical-align: middle;
+}
+
+.api-symbol-meta {
+  font-size: 0.68rem;
+  color: var(--md-default-fg-color--light);
+  margin: -0.2rem 0 0.45rem 0;
+}
+
+.api-symbol-meta p {
+  margin: 0;
+}
+
+.md-typeset h4 code {
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* --- Module guide symbol index --- */
+.api-module-symbols table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.api-module-symbols th:nth-child(1),
+.api-module-symbols td:nth-child(1) { width: 22%; }
+.api-module-symbols th:nth-child(2),
+.api-module-symbols td:nth-child(2) { width: 12%; }
+.api-module-symbols th:nth-child(3),
+.api-module-symbols td:nth-child(3) { width: 46%; }
+.api-module-symbols th:nth-child(4),
+.api-module-symbols td:nth-child(4) { width: 20%; }
+
+.api-module-symbols td {
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.api-module-symbols code {
+  white-space: normal;
+  word-break: break-word;
 }
 
 /* --- Module overview prose --- */
@@ -1935,7 +2181,12 @@ def _merge_returns_into_tables(text: str) -> str:
 # Main render
 # ---------------------------------------------------------------------------
 
-def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | None = None) -> Path:
+def render(
+    doc: DocResult,
+    base: str = DOCS_BASE,
+    api_pages: dict[str, str] | None = None,
+    nav_subfolders: bool = True,
+) -> Path:
     root = Path(base) / doc.name
     content_dir = root / "docs"
     modules_dir = content_dir / "modules"
@@ -1958,14 +2209,10 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         # Normalize the LLM output
         cleaned = _normalize_markdown(summary)
 
-        # Reorganize sections for consistent structure
-        reorganized = _reorganize_sections(cleaned, mod)
-
-        # Force Chinese section headings (LLM stubbornness fallback)
-        reorganized = _localize_headings(reorganized)
-
-        # Merge Returns lines into parameter tables (so Returns is not a separate "索引模块")
-        reorganized = _merge_returns_into_tables(reorganized)
+        # Render module pages as high-level guides. Detailed signatures,
+        # parameters, returns, constructors and method tables live under api/.
+        localized = _localize_headings(cleaned)
+        reorganized = _render_module_guide(localized, mod)
 
         mod_label = _clean_nav_label(mod)
 
@@ -2185,28 +2432,33 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
     (content_dir / "chat.md").write_text(chat_md, "utf-8")
 
     # --- mkdocs.yml ---
-    # Group modules by top-level directory for cleaner navigation
-    nav_groups: dict[str, list[tuple[str, str]]] = {}
-    for mod in modules_order:
-        fn = _safe(mod) + ".md"
-        label = _clean_nav_label(mod)
-        # Group by first path component
-        parts = mod.replace("\\", "/").split("/")
-        group = parts[0] if len(parts) > 1 else "root"
-        nav_groups.setdefault(group, []).append((label, f"modules/{fn}"))
+    def _nav_lines(section: str, mods: list[str], root: str) -> list[str]:
+        lines: list[str] = [f"  - {section}:"]
+        if not nav_subfolders:
+            for mod in sorted(mods, key=str.lower):
+                lines.append(f"      - {_clean_nav_label(mod)}: {root}/{_safe(mod)}.md")
+            return lines
 
-    # Sort groups and items within groups
-    nav_module_lines = []
-    for group in sorted(nav_groups.keys()):
-        items = sorted(nav_groups[group], key=lambda x: x[0].lower())
-        if group == "root":
-            # Root-level files — list directly under Modules (no "root" submenu)
-            for label, path in items:
-                nav_module_lines.append(f"          - {label}: {path}")
-        else:
-            nav_module_lines.append(f"          - {group}:")
-            for label, path in items:
-                nav_module_lines.append(f"            - {label}: {path}")
+        groups: dict[str, list[tuple[str, str]]] = {}
+        root_items: list[tuple[str, str]] = []
+        for mod in mods:
+            label = _clean_nav_label(mod)
+            path = f"{root}/{_safe(mod)}.md"
+            parts = mod.replace("\\", "/").split("/")
+            if len(parts) > 1:
+                groups.setdefault(parts[0], []).append((label, path))
+            else:
+                root_items.append((label, path))
+
+        for group in sorted(groups):
+            lines.append(f"      - {group}:")
+            for label, path in sorted(groups[group], key=lambda x: x[0].lower()):
+                lines.append(f"          - {label}: {path}")
+        for label, path in sorted(root_items, key=lambda x: x[0].lower()):
+            lines.append(f"      - {label}: {path}")
+        return lines
+
+    nav_module_lines = _nav_lines("Modules", modules_order, "modules")
 
     mkdocs_yml = [
         "site_name: " + doc.name + " API Reference",
@@ -2225,10 +2477,8 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         "    - navigation.tabs",
         "    - navigation.tabs.sticky",
         "    - navigation.sections",
-        "    - navigation.indexes",
         "    - navigation.top",
         "    - navigation.path",
-        "    - toc.integrate",
         "    - toc.follow",
         "    - search.suggest",
         "    - search.highlight",
@@ -2281,7 +2531,7 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         "  - footnotes",
         "  - toc:",
         "      permalink: true",
-        "      toc_depth: 3",
+        "      toc_depth: 2",
         "",
         "plugins:",
         "  - search:",
@@ -2294,13 +2544,10 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         "nav:",
         "  - Architecture: architecture.md",
         "  - LLM Chat: chat.md",
-        "  - Modules:",
     ]
     mkdocs_yml.extend(nav_module_lines)
     if api_order:
-        mkdocs_yml.append("  - Detailed API:")
-        for mod in sorted(api_order, key=str.lower):
-            mkdocs_yml.append(f"      - {_clean_nav_label(mod)}: api/{_safe(mod)}.md")
+        mkdocs_yml.extend(_nav_lines("Detailed API", api_order, "api"))
 
     (root / "mkdocs.yml").write_text("\n".join(mkdocs_yml) + "\n", "utf-8")
     return root

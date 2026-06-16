@@ -182,11 +182,17 @@ def _describe(session: SkillSession, cg: CallGraph, root: Path, s: SymbolInfo, k
     closure_ctx = "\n".join(ctx_lines) if ctx_lines else "(无库内调用)"
 
     task = (
-        f"为以下 {s.kind} 写 API 文档(只依据代码,不要复述代码,不要重复签名):\n"
+        f"为以下 {s.kind} 写 Detailed API 文档。只依据给定代码和调用上下文;不要复述源码;不要重复签名,签名会由渲染器单独展示。\n"
         f"名称: {s.qualified_name()}\n签名:\n```\n{s.signature}\n```\n"
         f"函数体:\n```\n{body}\n```\n"
         f"它(递归)调用到的库内函数,供你理解其底层行为:\n{closure_ctx}\n\n"
-        f"请输出:第一行一句话用途;随后 **Parameters** / **Returns** / **Raises**(若有)。"
+        f"输出格式必须固定如下:\n"
+        f"1. 第一行:一句话说明调用者为什么会使用这个符号,不要超过 60 个中文字符。\n"
+        f"2. **Parameters**: 逐项说明签名中真实存在的参数;如果没有参数或只有 self/cls,写 `无公开参数`。不要编造类型或默认值。\n"
+        f"3. **Returns**: 根据代码说明返回值;无法确定时写 `(unknown)`。\n"
+        f"4. **Raises**: 只列函数体中显式 raise/throw 的异常;没有就省略整个小节。\n"
+        f"5. **Behavior**: 1-3 个要点,说明关键分支、副作用、状态修改、I/O 或库内调用影响。\n"
+        f"禁止写模块概述、协作关系、阅读建议、长篇背景;这些属于 Module Guide。"
     )
     return session.run("apidoc", task, max_tokens=320, temperature=0.2).text.strip()
 
@@ -195,11 +201,15 @@ def _describe_class(session: SkillSession, s: SymbolInfo, methods: list[SymbolIn
     method_lines = [f"- {m.name}{_short_sig(m)}" for m in methods[:25]]
     methods_ctx = "\n".join(method_lines) if method_lines else "(无方法)"
     task = (
-        f"为以下 class 写 API 文档(只依据代码,不要复述代码):\n"
+        f"为以下 class 写 Detailed API 文档。只依据给定签名和方法清单;不要复述源码;不要重复签名,签名会由渲染器单独展示。\n"
         f"名称: {s.qualified_name()}\n签名:\n```\n{s.signature}\n```\n"
         f"它的方法:\n{methods_ctx}\n\n"
-        f"请输出:第一行一句话说明这个类代表什么、承担什么职责;"
-        f"随后用 Markdown 简述它的关键方法与典型用法。"
+        f"输出格式必须固定如下:\n"
+        f"1. 第一行:一句话说明这个类代表的对象/职责,不要超过 60 个中文字符。\n"
+        f"2. **Construction**: 根据签名说明构造所需信息;无法确定时写 `(unknown)`。\n"
+        f"3. **Key Methods**: 只列最重要的 3-8 个真实方法,每项说明适用场景;不要列字段清单。\n"
+        f"4. **Usage Notes**: 1-3 个调用者需要知道的约束、状态变化或协作点。\n"
+        f"禁止写模块概述、协作关系、阅读建议、长篇背景;这些属于 Module Guide。"
     )
     return session.run("apidoc", task, max_tokens=320, temperature=0.2).text.strip()
 

@@ -39,6 +39,7 @@ def doc(
     model: str = typer.Option(None, "--model", help="受管 server 用的 GGUF 路径(默认走脚本默认)"),
     ctx: int = typer.Option(8192, "--ctx", help="上下文长度(越小 KV 越省,内存越安全)"),
     use_lens: bool = typer.Option(False, "--use-lens", help="模块文档注入各模块 lens(需先 cli lens 生成)"),
+    nav_subfolders: bool = typer.Option(True, "--nav-subfolders/--no-nav-subfolders", help="左侧导航是否按一级子目录分组;开启后可手动展开/收起各 subfolder"),
 ) -> None:
     """生成文档站(MkDocs):架构总览(map-reduce)+ API 参考(抽取优先)。
 
@@ -87,7 +88,7 @@ def doc(
                     console.print(f"[dim]还剩 {res.pending},继续下一批…[/dim]")
             api_pages = render_all(res.by_module, res.by_key)
 
-        out = render(doc_result, api_pages=api_pages)
+        out = render(doc_result, api_pages=api_pages, nav_subfolders=nav_subfolders)
         console.print(f"[green]文档[/green] → {out} · 预览: mkdocs serve -f {out}/mkdocs.yml")
     finally:
         if server is not None:
