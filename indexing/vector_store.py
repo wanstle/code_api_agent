@@ -36,6 +36,9 @@ class VectorStore:
                         "name": c.name,
                         "kind": c.kind,
                         "language": c.language,
+                        "parent": c.parent,
+                        "qualified_name": c.qualified_name(),
+                        "signature": c.signature,
                         "start_line": c.start_line,
                         "end_line": c.end_line,
                     }

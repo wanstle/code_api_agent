@@ -10,6 +10,7 @@ from __future__ import annotations
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 
 from indexing.builder import build_index
 from indexing.retrieve import Retriever
@@ -39,6 +40,37 @@ def query(
                f"[dim]({h.source}, score={h.score})[/dim]"
         body = "\n".join(h.text.splitlines()[:18])
         console.print(Panel(body, title=head, title_align="left"))
+
+
+@app.command("eval")
+def eval_retrieval(
+    name: str = typer.Argument(..., help="仓库名(build 时的目录名)"),
+    cases: str = typer.Option(None, "--cases", help="JSON case 文件; click 可省略使用内置样例"),
+    k: int = typer.Option(5, "--k", help="每题检索 top-k"),
+) -> None:
+    """不调用 LLM 的 retrieval eval:检查 expected file/symbol 是否进入 top-k。"""
+    from indexing.eval_retrieval import run_retrieval_eval
+
+    res = run_retrieval_eval(name, cases_path=cases, k=k)
+    table = Table(title=f"Retrieval Eval · {name} · top-{k}")
+    table.add_column("Query")
+    table.add_column("File", justify="center")
+    table.add_column("Symbol", justify="center")
+    table.add_column("Top hit")
+    for row in res["cases"]:
+        top = row["top"][0] if row["top"] else {}
+        top_label = f"{top.get('name', '')} @ {top.get('file', '')}:{top.get('start_line', '')}"
+        table.add_row(
+            row["query"][:48],
+            "[green]OK[/green]" if row["file_ok"] else "[red]MISS[/red]",
+            "[green]OK[/green]" if row["symbol_ok"] else "[red]MISS[/red]",
+            top_label[:72],
+        )
+    console.print(table)
+    console.print(
+        f"file_hit_rate={res['file_hit_rate']:.0%} "
+        f"symbol_hit_rate={res['symbol_hit_rate']:.0%} ({res['total']} cases)"
+    )
 
 
 if __name__ == "__main__":

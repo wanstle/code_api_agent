@@ -33,6 +33,14 @@ def _anchor(sym) -> str:
     return f"sym-{_safe(sym.file)}-{sym.start_line}"
 
 
+def _source_page_name(path: str) -> str:
+    return _safe(path) + ".md"
+
+
+def _source_link(sym) -> str:
+    return f"../source/{_source_page_name(sym.file)}#L{sym.start_line}"
+
+
 def _purpose(entry: APIEntry) -> str:
     """取描述的第一行作为一句话用途。"""
     if not entry.body_md:
@@ -84,7 +92,7 @@ def render_module_md(module: str, entries: list[APIEntry], by_key: dict[str, API
         callees = _callees_md(e, by_key)
         if callees:
             out.append("\n" + callees)
-        out.append(f"\n*来源: `{s.location()}`*")
+        out.append(f"\n*来源: [`{s.location()}`]({_source_link(s)})*")
         out.append("\n---")
 
     if pending:

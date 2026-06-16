@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from qa.agent import QAAgent
+from qa.agent import DEFAULT_SEED_K, MAX_ITERS, QAAgent
 
 app = typer.Typer(add_completion=False, help="qa Agent:工具循环问答")
 console = Console()
@@ -20,8 +20,8 @@ console = Console()
 def ask(
     name: str = typer.Argument(..., help="仓库名"),
     question: str = typer.Argument(..., help="问题"),
-    k: int = typer.Option(5, "--k"),
-    max_iters: int = typer.Option(5, "--max-iters"),
+    k: int = typer.Option(DEFAULT_SEED_K, "--k"),
+    max_iters: int = typer.Option(MAX_ITERS, "--max-iters"),
 ) -> None:
     agent = QAAgent(name)
     res = agent.ask(question, k=k, max_iters=max_iters)

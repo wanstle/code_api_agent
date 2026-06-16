@@ -80,10 +80,13 @@ unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
 models/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
 ```
 
-可以检查文件：
+其他选择如 `Qwen/Qwen3-Coder-Next-GGUF` 也是不错的选择。
+
+但是注意`/home/`是NFS，因此可以考虑
 
 ```bash
-ls -lh models/Qwen3-Coder-30B-A3B-Instruct-GGUF/
+mkdir -p /tmp/qwen3-next
+cp models/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M/*.gguf /tmp/qwen3-next/
 ```
 
 
@@ -93,7 +96,7 @@ ls -lh models/Qwen3-Coder-30B-A3B-Instruct-GGUF/
 
 ```bash
 MODEL=/home/sht8/xiaojx/code_api_agent/models/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf \
-PORT=8080 CTX=262144 SLOTS=1 \
+PORT=8080 CTX=131072 SLOTS=1 \
 scripts/serve_llama_prebuilt_vulkan.sh
 ```
 
@@ -104,6 +107,30 @@ curl http://127.0.0.1:8080/health
 ```
 
 返回 `{"status":"ok"}` 即可继续。
+
+### 使用多分片 GGUF 模型
+
+如果模型目录里是 llama.cpp 的 GGUF 分片，例如：
+
+```text
+models/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M/
+  Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf
+  Qwen3-Coder-Next-Q4_K_M-00002-of-00004.gguf
+  Qwen3-Coder-Next-Q4_K_M-00003-of-00004.gguf
+  Qwen3-Coder-Next-Q4_K_M-00004-of-00004.gguf
+```
+
+启动时只需要把 `MODEL` 指向第一个分片，llama.cpp 会自动读取同目录下后续分片：
+
+```bash
+MODEL=/home/sht8/xiaojx/code_api_agent/models/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf \
+PORT=8080 CTX=131072 SLOTS=1 \
+scripts/serve_llama_prebuilt_vulkan.sh
+
+MODEL=/tmp/qwen3-next/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf \
+PORT=8080 CTX=131072 SLOTS=1 \
+scripts/serve_llama_prebuilt_vulkan.sh
+```
 
 ## 2. 建索引
 
@@ -139,7 +166,7 @@ python -m cli doc <repo-name> --use-lens
 如果 `llama-server` 已经手动启动，推荐使用外部 server 模式：
 
 ```bash
-python -m cli doc <repo-name> --use-lens
+python -m cli doc <repo-name> --use-lens --api --complete
 ```
 
 如果希望 CLI 自动启动并停止模型服务，使用 managed 模式：
@@ -191,9 +218,10 @@ http://127.0.0.1:8000/
 
 - `Architecture`：整体架构和模块索引
 - `LLM Chat`：嵌入式问答窗口
-- `API Quick Ref`：API 快速索引
 - `Modules`：模块级文档
 - `Detailed API`：逐模块 API 细项页
+
+源码页面仍会生成为 API `来源` 链接的跳转目标，但不会出现在导航或站内搜索中。
 
 ## 5. 在文档内使用 LLM 问答窗口
 
@@ -209,7 +237,7 @@ REPO=<repo-name> chainlit run app.py --host 127.0.0.1 --port 8001
 http://127.0.0.1:8000/
 ```
 
-进入导航里的 `LLM Chat`，即可在文档内提问。
+进入导航里的 `LLM Chat`，即可在文档内提问；API 详情页中的 `来源` 链接可跳到对应源码行。
 
 也可以直接访问 Chainlit：
 
@@ -224,20 +252,6 @@ python -m cli ask <repo-name> "question here"
 ```
 
 ## 6. 常见问题
-
-### repo 名称写错
-
-如果出现：
-
-```text
-FileNotFoundError: .cache/index/<name>/meta.json
-```
-
-先查看真实索引名：
-
-```bash
-find .cache/index -maxdepth 2 -name meta.json -print
-```
 
 ### context 超限
 

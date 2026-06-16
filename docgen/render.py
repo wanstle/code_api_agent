@@ -3,7 +3,6 @@
 Features:
   - Material theme + hierarchical sidebar navigation
   - Intra-page TOC with anchor links
-  - API quick-reference index page
   - Post-processing: table alignment, separator dedup, blank-line normalization
   - Custom CSS for professional API Reference appearance
   - Section reorganization for consistent heading hierarchy
@@ -11,8 +10,15 @@ Features:
 
 from __future__ import annotations
 
+import html
 import re
+import shutil
 from pathlib import Path
+
+from pygments import highlight
+from pygments.formatters import HtmlFormatter
+from pygments.lexers import TextLexer, get_lexer_by_name
+from pygments.util import ClassNotFound
 
 from docgen.summarize import DocResult
 
@@ -41,6 +47,97 @@ def _clean_nav_label(path: str) -> str:
         parts[-1] = last
     return "/".join(parts)
 
+
+def _source_page_name(path: str) -> str:
+    return _safe(path) + ".md"
+
+
+def _source_link(path: str, line: int | None = None) -> str:
+    anchor = f"#L{line}" if line else ""
+    # API pages live under docs/api/, while source pages live under docs/source/.
+    # Use a relative Markdown link so MkDocs can validate it during build.
+    return f"../source/{_source_page_name(path)}{anchor}"
+
+
+def _normalize_source_links(md: str) -> str:
+    """Rewrite stale absolute source links that may come from cached API docs."""
+    return re.sub(r"\(/source/([^\s)]+?)\.md/#L(\d+)\)", r"(../source/\1.md#L\2)", md)
+
+
+def _lang_for_source(path: str, default: str = "") -> str:
+    ext = Path(path).suffix.lower()
+    return {
+        ".py": "python", ".js": "javascript", ".jsx": "javascript",
+        ".mjs": "javascript", ".cjs": "javascript", ".ts": "typescript",
+        ".tsx": "tsx", ".java": "java", ".go": "go", ".rs": "rust",
+        ".c": "c", ".h": "cpp", ".cpp": "cpp", ".cc": "cpp",
+        ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp", ".cs": "csharp",
+        ".rb": "ruby", ".php": "php", ".kt": "kotlin", ".swift": "swift",
+        ".scala": "scala",
+    }.get(ext, default)
+
+
+def _highlight_source_lines(text: str, lang: str) -> list[str]:
+    if not text:
+        return [""]
+    try:
+        lexer = get_lexer_by_name(lang) if lang else TextLexer()
+    except ClassNotFound:
+        lexer = TextLexer()
+    formatter = HtmlFormatter(nowrap=True)
+    highlighted = highlight(text, lexer, formatter).rstrip("\n")
+    return highlighted.splitlines() or [""]
+
+
+def _render_source_files(doc: DocResult, content_dir: Path) -> None:
+    """Render read-only source pages used only as deep-link targets."""
+    source_dir = content_dir / "source"
+    if source_dir.exists():
+        shutil.rmtree(source_dir)
+    source_dir.mkdir(parents=True, exist_ok=True)
+    repo_root = Path(doc.meta.get("root", ""))
+    files = sorted(doc.meta.get("files", []), key=lambda f: f.get("path", ""))
+
+    # Source pages are not a browsable documentation section. They exist so API
+    # references can jump to exact source lines, and are excluded from search.
+
+    for f in files:
+        rel = f.get("path", "")
+        if not rel:
+            continue
+        abs_path = repo_root / rel
+        try:
+            lines = abs_path.read_text("utf-8", "replace").splitlines()
+        except OSError as e:
+            body = f"_无法读取源码: {e}_"
+        else:
+            lang = _lang_for_source(rel, f.get("lang", ""))
+            highlighted_lines = _highlight_source_lines("\n".join(lines), lang)
+            code_lines = []
+            for i, highlighted_line in enumerate(highlighted_lines, 1):
+                code_lines.append(
+                    f'<span id="L{i}" class="source-line"><span class="source-line-no">{i}</span>'
+                    f'{highlighted_line}</span>'
+                )
+            body = (
+                f'<pre class="source-code highlight" markdown="0"><code class="language-{lang}">'
+                + "\n".join(code_lines)
+                + "</code></pre>"
+            )
+        page = [
+            "---",
+            "search:",
+            "  exclude: true",
+            "---",
+            "",
+            f"# `{rel}`",
+            "",
+            f'<span class="md-source-file"><a href="../architecture.md">Architecture</a></span>',
+            "",
+            body,
+            "",
+        ]
+        (source_dir / _source_page_name(rel)).write_text("\n".join(page), "utf-8")
 
 # ---------------------------------------------------------------------------
 # Markdown post-processing — fixes LLM formatting sloppiness
@@ -1434,6 +1531,52 @@ EXTRA_CSS = """\
 }
 
 
+
+/* --- Source browser --- */
+.source-code {
+  border: 1px solid var(--api-border-color);
+  border-radius: 8px;
+  overflow: auto;
+  background: var(--api-code-bg);
+  padding: 0;
+}
+
+.source-code code {
+  display: block;
+  padding: 10px 0;
+}
+
+.source-line {
+  display: block;
+  min-height: 1.35em;
+  padding: 0 16px 0 0;
+  white-space: pre;
+}
+
+.source-line {
+  scroll-margin-top: 5rem;
+}
+
+.source-line:target {
+  background: rgba(242, 184, 69, 0.20);
+  box-shadow: inset 4px 0 0 #f2b845;
+}
+
+[data-md-color-scheme="slate"] .source-line:target {
+  background: rgba(242, 184, 69, 0.16);
+}
+
+.source-line-no {
+  display: inline-block;
+  width: 4.5em;
+  margin-right: 1em;
+  padding-right: 0.8em;
+  color: #80868b;
+  text-align: right;
+  user-select: none;
+  border-right: 1px solid var(--api-border-color);
+}
+
 /* --- Embedded LLM chat page --- */
 .llm-chat-shell {
   width: 100%;
@@ -1554,8 +1697,8 @@ def _generate_api_index(
             mod_label = _clean_nav_label(mod)
             html_lines.append(
                 f'<tr>'
-                f'<td class="api-index-name"><code><a href="{link_root}/{fn}/#{anchor}">{name}</a></code></td>'
-                f'<td><a href="{link_root}/{fn}/">{mod_label}</a></td>'
+                f'<td class="api-index-name"><code><a href="/{link_root}/{fn}/#{anchor}">{name}</a></code></td>'
+                f'<td><a href="/{link_root}/{fn}/">{mod_label}</a></td>'
                 f'</tr>'
             )
         html_lines.extend(["</tbody>", "</table>", "</div>"])
@@ -1804,6 +1947,7 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
 
     # --- Generate custom CSS ---
     (stylesheets_dir / "extra.css").write_text(EXTRA_CSS, "utf-8")
+    _render_source_files(doc, content_dir)
 
     # --- Module pages (with TOC + navigation) ---
     modules_order: list[str] = []
@@ -1828,8 +1972,7 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         page = [
             f"# {mod_label}",
             "",
-            f'<span class="md-source-file"><a href="../architecture/">Architecture</a> &nbsp;|&nbsp; '
-            f'<a href="../api-index/">API Quick Ref</a></span>',
+            f'<span class="md-source-file"><a href="../architecture.md">Architecture</a></span>',
             "",
             "---",
             "",
@@ -1839,8 +1982,7 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         page.append("")
         page.append("---")
         page.append(
-            f'<span class="md-source-file"><a href="../architecture/">Architecture</a> &nbsp;|&nbsp; '
-            f'<a href="../api-index/">API Quick Ref</a></span>'
+            f'<span class="md-source-file"><a href="../architecture.md">Architecture</a></span>'
         )
 
         (modules_dir / fn).write_text("\n".join(page), "utf-8")
@@ -1850,11 +1992,13 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         for mod, md in api_pages.items():
             fn = _safe(mod) + ".md"
             api_order.append(mod)
-            (api_dir / fn).write_text(_normalize_markdown(md), "utf-8")
+            api_md = _normalize_source_links(_normalize_markdown(md))
+            (api_dir / fn).write_text(api_md, "utf-8")
 
-    # --- api-index.md ---
-    quick_md = _generate_api_index(doc, modules_order, api_pages=api_pages)
-    (content_dir / "api-index.md").write_text(quick_md, "utf-8")
+    # API quick-reference is intentionally not generated as a public page.
+    old_api_index = content_dir / "api-index.md"
+    if old_api_index.exists():
+        old_api_index.unlink()
 
     # --- architecture.md ---
     arch_raw = _clean_architecture(doc.architecture or "")
@@ -1865,8 +2009,6 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
 
     arch_lines = [
         f"# Architecture: {doc.name}",
-        "",
-        f'<span class="md-source-file"><a href="api-index/">API Quick Ref</a></span>',
         "",
         "---",
         "",
@@ -2146,10 +2288,12 @@ def render(doc: DocResult, base: str = DOCS_BASE, api_pages: dict[str, str] | No
         "      separator: '[\\s\\-\\_\\.\\/]+'",
         "",
         "docs_dir: docs",
+        "not_in_nav: |",
+        "  index.md",
+        "  source/**/*.md",
         "nav:",
         "  - Architecture: architecture.md",
         "  - LLM Chat: chat.md",
-        "  - API Quick Ref: api-index.md",
         "  - Modules:",
     ]
     mkdocs_yml.extend(nav_module_lines)
