@@ -155,6 +155,12 @@ python -m cli lens <repo-name>
 python -m cli doc <repo-name> --use-lens --complete --nav-subfolders
 ```
 
+如果你只想刷新模块文档，但保留现有 Detailed API 页面，可以用：
+
+```bash
+python -m cli doc <repo-name> --modules-only --use-lens --nav-subfolders
+```
+
 `cli doc` 默认会生成三层内容：
 
 - `Architecture`：仓库整体视角，回答项目分层、关键流程和模块关系。

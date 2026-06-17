@@ -600,6 +600,23 @@ def _overview_bullets(lines: list[str]) -> list[str]:
 
 def _extract_symbol_cards(lines: list[str], limit: int = 12) -> list[dict[str, str]]:
     cards: list[dict[str, str]] = []
+    html_blob = "\n".join(lines)
+    for row in re.findall(r"<tr>(.*?)</tr>", html_blob, flags=re.S):
+        cols = re.findall(r"<t[dh]>(.*?)</t[dh]>", row, flags=re.S)
+        if len(cols) < 3:
+            continue
+        name = _plain_inline(cols[0])
+        if not name or name == "入口":
+            continue
+        cards.append({
+            "name": name,
+            "kind": _plain_inline(cols[1]) if len(cols) > 1 else "",
+            "summary": _plain_inline(cols[2]) if len(cols) > 2 else "",
+            "source": _plain_inline(cols[3]) if len(cols) > 3 else "",
+        })
+        if len(cards) >= limit:
+            return cards
+
     current: dict[str, str] | None = None
     in_code = False
 
@@ -658,7 +675,7 @@ def _extract_symbol_cards(lines: list[str], limit: int = 12) -> list[dict[str, s
 
 def _render_symbol_index(cards: list[dict[str, str]], module_path: str) -> list[str]:
     if not cards:
-        return ["_未提取到稳定的入口符号；详细符号请查看 Detailed API。_"]
+        return []
     rows = [
         '<div class="api-table-container api-module-symbols" markdown="0">',
         '<table>',
@@ -2186,14 +2203,22 @@ def render(
     base: str = DOCS_BASE,
     api_pages: dict[str, str] | None = None,
     nav_subfolders: bool = True,
+    preserve_existing_api: bool = False,
 ) -> Path:
     root = Path(base) / doc.name
     content_dir = root / "docs"
     modules_dir = content_dir / "modules"
     api_dir = content_dir / "api"
     stylesheets_dir = content_dir / "stylesheets"
+    if modules_dir.exists():
+        shutil.rmtree(modules_dir)
     modules_dir.mkdir(parents=True, exist_ok=True)
-    api_dir.mkdir(parents=True, exist_ok=True)
+    if api_pages:
+        if api_dir.exists():
+            shutil.rmtree(api_dir)
+        api_dir.mkdir(parents=True, exist_ok=True)
+    elif not preserve_existing_api and api_dir.exists():
+        shutil.rmtree(api_dir)
     stylesheets_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Generate custom CSS ---
@@ -2241,6 +2266,8 @@ def render(
             api_order.append(mod)
             api_md = _normalize_source_links(_normalize_markdown(md))
             (api_dir / fn).write_text(api_md, "utf-8")
+    elif preserve_existing_api and api_dir.exists():
+        api_order = sorted(p.stem for p in api_dir.glob("*.md"))
 
     # API quick-reference is intentionally not generated as a public page.
     old_api_index = content_dir / "api-index.md"
