@@ -5,6 +5,7 @@
 \usepackage{xcolor}
 \usepackage{hyperref}
 \usepackage{enumitem}
+\usepackage{graphicx}
 \usepackage[a4paper,margin=0.7in]{geometry}
 
 \newenvironment{IEEEkeywords}
@@ -36,7 +37,7 @@ Member 3: Jinxi Xiao \quad Student ID: 2025233210
 \maketitle
 
 \begin{abstract}
-Understanding a large and unfamiliar code repository is a recurring challenge in software engineering. Manual documentation is often missing, outdated, or inconsistent with the actual source. While large language models (LLMs) can summarize code, they may hallucinate function signatures, parameter types, and exception specifications that do not exist in the source. This report presents RepoLens, a local-first system that combines tree-sitter-based static analysis with local LLM inference to produce traceable, verifiable API documentation and to support retrieval-augmented question answering. The system ingests a GitHub repository, builds hybrid vector-and-symbol indexes, generates a hierarchical MkDocs documentation site, and provides an interactive QA agent equipped with sandboxed file-inspection tools. All inference runs against a local llama.cpp server using a quantized GGUF coding model, eliminating cloud API dependencies. The project demonstrates that grounding LLM output in deterministically extracted source facts significantly reduces hallucination risk while preserving readable, informative documentation.
+Understanding a large and unfamiliar code repository is a recurring challenge in software engineering. Manual documentation is often missing, outdated, or inconsistent with the actual source. While large language models (LLMs) can summarize code, they may hallucinate function signatures, parameter types, and exception specifications that do not exist in the source. This report presents RepoLens, a local-first system that combines tree-sitter-based static analysis with local LLM inference to produce traceable, verifiable API documentation and to support retrieval-augmented question answering. The system ingests a GitHub repository, builds hybrid vector-and-symbol indexes, generates a hierarchical MkDocs documentation site, and provides an interactive QA agent equipped with sandboxed file-inspection tools. All inference runs against a local llama.cpp server using a quantized GGUF coding model, eliminating cloud API dependencies. The project demonstrates that grounding LLM output in deterministically extracted source facts significantly reduces hallucination risk while preserving readable, informative documentation. And our project can be found at \url{https://github.com/wanstle/code_api_agent}.
 \end{abstract}
 
 %-----------------------------------------------------------------------
@@ -170,21 +171,57 @@ A key quality feature is the answer verification step: the \texttt{final} action
 \section{Related Work}
 %-----------------------------------------------------------------------
 
-Several categories of tools address similar problems. Traditional documentation generators such as Doxygen and Sphinx rely on code comments and annotations, producing reference-style output with minimal narrative content. AI-assisted tools like GitHub Copilot Chat and Sourcegraph Cody can answer code questions but require cloud connectivity and do not generate persistent documentation sites. Academic systems such as RepoFusion and RepoGraph have explored repository-level code understanding with LLMs, but typically focus on code generation tasks rather than documentation. RepoLens differs in three main ways: (1) it generates a complete, browsable documentation site rather than providing only ephemeral chat responses; (2) it enforces strict separation between deterministically extracted facts and LLM-generated descriptions; and (3) it is designed to run entirely on local hardware with no external service dependencies.
+Several categories of tools address similar problems. Traditional documentation generators such as Doxygen and Sphinx rely on code comments and annotations, producing reference-style output with minimal narrative content. AI-assisted tools like \url{https://deepwiki.com/} serve as good choices, but they typically run with cloud-based LLMs and raise privacy concerns. 
 
 %-----------------------------------------------------------------------
-\section{Evaluation and Observations}
+\section{Demo}
 %-----------------------------------------------------------------------
 
-The system has been tested on several repositories of varying size and complexity. The key observations are summarized below.
+The generated documentation site is a fully browsable MkDocs Material site with four main sections: Architecture, Modules, Detailed API, and LLM Chat. This section walks through each component using screenshots taken from a live deployment.
 
-\begin{itemize}[nosep,leftmargin=*]
-  \item \textbf{Small Python projects (e.g., Click)}: The base summarization prompt produces useful documentation on its own. The lens mechanism provides only marginal improvement, as the module structure is simple and well-defined.
-  \item \textbf{Complex Python projects (e.g., Scrapy)}: The lens mechanism meaningfully improves module distinction, increases coverage of secondary modules, and reduces hallucinated content by providing the LLM with explicit per-module guidance. The map-reduce strategy handles the large symbol count effectively.
-  \item \textbf{Large C++ projects (e.g., Ceres Solver)}: C++ extraction remains the primary bottleneck. Templates, traits, macros, and complex type systems produce noisy symbol data that degrades both indexing quality and documentation accuracy. Prompt engineering alone cannot compensate for extraction noise.
-\end{itemize}
+\subsection{Architecture Overview}
 
-The system's memory monitoring module in \texttt{common.gpu} has proven essential for the AMD APU deployment, where video memory and system memory are separate pools. On this hardware, system memory is often the tighter constraint, and the watchdog correctly identifies and responds to both memory sources through a unified interface that queries NVIDIA SMI, AMD sysfs VRAM/GTT, and \texttt{/proc/meminfo} simultaneously.
+The Architecture page (Figure~\ref{fig:arch}) provides a repository-level summary synthesized by the map-reduce pipeline. It describes the project's overall structure, key data flows and call chains, a module index table with one-line descriptions, and cross-module dependency relationships. This page serves as the entry point for developers who are new to the repository and need a high-level orientation before diving into specific modules.
+
+\begin{figure*}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{assets/arch.png}
+  \caption{Architecture overview page, showing the repository-level summary with module index and dependency descriptions.}
+  \label{fig:arch}
+\end{figure*}
+
+\subsection{Module Guides}
+
+Each top-level module receives its own dedicated page (Figure~\ref{fig:module}), generated during the map phase of summarization. A module guide covers the module's role and responsibilities, its boundaries with other modules, key entry points (classes and functions), usage patterns, and a suggested reading order for the source files within the module. When the lens mechanism is enabled, the module's lens---which specifies role, focus points, and suggested sections---is injected into the generation prompt to improve coverage and reduce hallucinated content. The left sidebar supports hierarchical navigation with collapsible subfolder groups via the \texttt{--nav-subfolders} option.
+
+\begin{figure*}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{assets/module.png}
+  \caption{Module guide page, showing per-module documentation with role description, key entry points, and API references.}
+  \label{fig:module}
+\end{figure*}
+
+\subsection{Detailed API Reference}
+
+The Detailed API section (Figure~\ref{fig:api}) contains per-symbol documentation for functions, classes, and methods. Each entry includes the \textbf{deterministically extracted signature} (never generated by the LLM), an LLM-written description of behavior, parameter and return value explanations, a list of raised exceptions (constrained to those actually found in the source), and a \textbf{Source} link that points to the exact file and line range. Internal cross-references connect callers and callees via the call graph, allowing readers to navigate between related symbols. This is the most fine-grained level of documentation and is intended for developers who need to understand specific APIs in detail.
+
+\begin{figure*}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{assets/api.png}
+  \caption{Detailed API reference page, showing per-symbol documentation with deterministic signatures, parameter tables, and source links.}
+  \label{fig:api}
+\end{figure*}
+
+\subsection{LLM Chat}
+
+The LLM Chat page (Figure~\ref{fig:chat}) embeds a Chainlit conversational interface directly into the documentation site via an iframe. Users can ask natural-language questions about the repository and receive answers with \texttt{file:line} citations. The chat interface displays the tool-call trajectory---showing which tools were invoked (e.g., \texttt{search\_code}, \texttt{find\_symbol}, \texttt{read\_file}) and in what order---so that users can verify how the agent arrived at its answer. The same Q\&A functionality is also available through the command line (\texttt{python -m cli ask <repo> "question"}) and through a standalone Gradio demo application (\texttt{demo.py}) that provides a two-tab interface for document browsing and interactive questioning.
+
+\begin{figure*}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{assets/llm_chat.png}
+  \caption{LLM Chat page with embedded Chainlit interface, showing a Q\&A session with tool-call trajectory and file:line citations.}
+  \label{fig:chat}
+\end{figure*}
 
 %-----------------------------------------------------------------------
 \section{Limitations and Future Work}
